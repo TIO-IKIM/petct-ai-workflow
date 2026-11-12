@@ -1,0 +1,65 @@
+# HAPI FHIR (official image hapiproject/hapi): stores each AI result as a DiagnosticReport
+# (workflow parameter fhir-url=http://hapi-fhir:8080/fhir). Skip this file if you already
+# have a FHIR server, or if you do not need FHIR output.
+#
+# This uses the embedded H2 database. For production, configure PostgreSQL:
+# https://github.com/hapifhir/hapi-fhir-jpaserver-starter
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hapi-fhir-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hapi-fhir
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: hapi-fhir}
+  template:
+    metadata:
+      labels: {app: hapi-fhir}
+    spec:
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: hapi-fhir
+          image: hapiproject/hapi:v8.12.0-1
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - name: spring.datasource.url
+              value: jdbc:h2:file:/data/hapi/h2
+            - name: hapi.fhir.subscription.resthook_enabled
+              value: "true"
+          volumeMounts:
+            - name: data
+              mountPath: /data/hapi
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {memory: 4Gi}
+          readinessProbe:
+            httpGet: {path: /fhir/metadata, port: 8080}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hapi-fhir-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hapi-fhir
+spec:
+  selector: {app: hapi-fhir}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}

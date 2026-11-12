@@ -1,0 +1,35 @@
+# Stores the AI result as a FHIR DiagnosticReport (status preliminary) with the 2D image attached.
+# Works with HAPI FHIR (deploy/hapi-fhir.yaml) or any FHIR R4 server that accepts unauthenticated POST.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: pipeline-fhir
+spec:
+  templates:
+    - name: diagnostic-report
+      inputs:
+        parameters:
+          - name: fhir-url
+            description: FHIR base URL, e.g. http://hapi-fhir:8080/fhir
+          - name: accession-number
+          - name: png
+      script:
+        image: curlimages/curl:8.16.0
+        command: [sh]
+        env:
+          - {name: FHIR_URL, value: "{{inputs.parameters.fhir-url}}"}
+          - {name: ACCESSION, value: "{{inputs.parameters.accession-number}}"}
+          - {name: PNG, value: "{{inputs.parameters.png}}"}
+        source: |
+          set -eu
+          {
+            printf '{"resourceType": "DiagnosticReport", "status": "preliminary",'
+            printf ' "code": {"text": "AI PET/CT reading support"},'
+            printf ' "identifier": [{"type": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0203", "code": "ACSN"}]}, "value": "%s"}],' "$ACCESSION"
+            printf ' "conclusion": "Generated automatically. Verify before clinical use.",'
+            printf ' "presentedForm": [{"contentType": "image/png", "title": "InsightMIP", "data": "'
+            base64 "$PNG" | tr -d '\n'
+            printf '"}]}'
+          } | curl -sS --fail-with-body -H "Content-Type: application/fhir+json" --data-binary @- "$FHIR_URL/DiagnosticReport"
+        volumeMounts:
+          - {name: data, mountPath: /data}

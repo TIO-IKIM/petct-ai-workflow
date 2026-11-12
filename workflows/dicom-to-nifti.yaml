@@ -1,0 +1,29 @@
+# DICOM series folder -> NIfTI file (image negarshahamiri/dicom-to-nifti, source microservices/dicom-to-nifti).
+# CT in HU (int16), PET as SUVbw (pet-values=raw for the rescaled DICOM values), any vendor.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: pipeline-dicom-to-nifti
+spec:
+  templates:
+    - name: dicom-to-nifti
+      inputs:
+        parameters:
+          - name: dicom-dir
+          - name: nifti-file
+          - name: pet-values
+            value: suv
+            enum: [suv, raw]
+      container:
+        image: negarshahamiri/dicom-to-nifti:v2
+        command: [sh, -c]
+        args:
+          - >-
+            mkdir -p "$(dirname "{{inputs.parameters.nifti-file}}")" &&
+            python /app/dicom_to_nifti.py -i "{{inputs.parameters.dicom-dir}}" -o "{{inputs.parameters.nifti-file}}"
+            --pet "{{inputs.parameters.pet-values}}"
+        volumeMounts:
+          - {name: data, mountPath: /data}
+        resources:
+          requests: {cpu: "1", memory: 4Gi}
+          limits: {memory: 8Gi}

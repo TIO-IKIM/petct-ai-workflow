@@ -1,0 +1,19 @@
+# patient data and results: never commit
+data_sample/
+data_sample_removed/
+*.png
+!microservices/pet-segmentation/nnUNet/documentation/assets/*.png
+*.nii
+*.nii.gz
+*.dcm
+# model weights (see microservices/pet-segmentation/Dockerfile)
+microservices/pet-segmentation/nnUNet_results/
+*.pt
+*.pth
+*.model
+# local files
+__pycache__/
+*.pyc
+*.egg-info/
+.ipynb_checkpoints/
+.DS_Store

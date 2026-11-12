@@ -1,0 +1,85 @@
+# Orthanc (official image orthancteam/orthanc): DICOM gateway between the pipeline and your PACS.
+# It retrieves studies from the PACS, stores the AI results, sends them to the PACS,
+# and includes the OHIF viewer at http://<orthanc>:8042/ohif/
+#
+# Before applying: create the secret 'orthanc-login' (see README) and edit DICOM_MODALITIES below.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: orthanc-storage
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 500Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orthanc
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: orthanc}
+  template:
+    metadata:
+      labels: {app: orthanc}
+    spec:
+      containers:
+        - name: orthanc
+          image: orthancteam/orthanc:26.9.0
+          ports:
+            - {name: http, containerPort: 8042}
+            - {name: dicom, containerPort: 4242}
+          env:
+            - name: ORTHANC__NAME
+              value: AI PET/CT gateway
+            # AE title of Orthanc; register it in your PACS
+            - name: ORTHANC__DICOM_AET
+              value: PETCT_AI
+            # Your PACS. "pacs" is the name the pipeline uses.
+            # RetrieveMethod C-GET needs no route from the PACS back to Orthanc;
+            # use C-MOVE if your PACS does not support C-GET (then expose port 4242, see Service below).
+            - name: ORTHANC__DICOM_MODALITIES
+              value: |
+                {"pacs": {"AET": "PACS_AE_TITLE", "Host": "pacs.hospital.local", "Port": 104, "RetrieveMethod": "C-GET"}}
+            - name: DICOM_WEB_PLUGIN_ENABLED
+              value: "true"
+            - name: OHIF_PLUGIN_ENABLED
+              value: "true"
+            - name: ORTHANC__AUTHENTICATION_ENABLED
+              value: "true"
+            - name: ORTHANC__REGISTERED_USERS
+              valueFrom:
+                secretKeyRef: {name: orthanc-login, key: users}
+            # Optional: send results to a DICOMweb server instead of DIMSE, e.g.
+            # {"pacs-web": {"Url": "https://pacs.hospital.local/dicom-web/", "Username": "...", "Password": "..."}}
+            - name: ORTHANC__DICOM_WEB__SERVERS
+              valueFrom:
+                secretKeyRef: {name: orthanc-login, key: dicomweb-servers, optional: true}
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/orthanc/db
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {memory: 8Gi}
+          readinessProbe:
+            tcpSocket: {port: 8042}
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: orthanc-storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orthanc
+spec:
+  selector: {app: orthanc}
+  ports:
+    - {name: http, port: 8042, targetPort: 8042}
+    - {name: dicom, port: 4242, targetPort: 4242}
+  # For C-MOVE, or to let the PACS push studies to Orthanc, the PACS must reach port 4242:
+  # type: NodePort

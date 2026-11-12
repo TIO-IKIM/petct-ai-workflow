@@ -1,0 +1,96 @@
+# Re-creates InsightMIP from a finished pipeline run, without retrieving, converting or
+# segmenting again: runs only the analysis (SUV, reference organs, MIP) for the follow-up and
+# baseline folder of that run, joins them, and stores the new InsightMIP in the follow-up study.
+# Use it after a change to the analysis image (e.g. the InsightMIP style).
+#
+# CLI: argo submit --from workflowtemplate/pipeline-rerun-insightmip -p run=<pipeline run name> \
+#        -p accession-number=<FOLLOW-UP> -p baseline-accession-number=<BASELINE> --watch
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: pipeline-rerun-insightmip
+spec:
+  entrypoint: main
+  artifactRepositoryRef: {configMap: petct-artifacts, key: s3}
+  arguments:
+    parameters:
+      - name: run
+        description: Name of the finished pipeline run, e.g. pipeline-mfsbm (its files in /data/runs/<run>/)
+      - name: accession-number
+        description: Accession number of the follow-up study of that run
+      - name: baseline-accession-number
+        value: ""
+        description: Accession number of the baseline study of that run (empty if the run had none)
+      - name: orthanc-url
+        value: http://orthanc:8042
+      - name: pvc
+        value: petct-data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: "{{workflow.parameters.pvc}}"
+
+  templates:
+    - name: main
+      steps:
+        - - name: followup
+            template: analysis
+            arguments:
+              parameters:
+                - {name: accession-number, value: "{{workflow.parameters.accession-number}}"}
+                - {name: dir, value: "/data/runs/{{workflow.parameters.run}}/followup"}
+          - name: baseline
+            template: analysis
+            when: "'{{workflow.parameters.baseline-accession-number}}' != ''"
+            arguments:
+              parameters:
+                - {name: accession-number, value: "{{workflow.parameters.baseline-accession-number}}"}
+                - {name: dir, value: "/data/runs/{{workflow.parameters.run}}/baseline"}
+        - - name: insightmip
+            templateRef: {name: pipeline-analysis, template: insightmip}
+            arguments:
+              parameters:
+                - {name: baseline-png, value: "/data/runs/{{workflow.parameters.run}}/baseline/nifti/result.png"}
+                - {name: followup-png, value: "{{steps.followup.outputs.parameters.png}}"}
+                - {name: output-png, value: "/data/runs/{{workflow.parameters.run}}/insightmip.png"}
+        - - name: createresult
+            templateRef: {name: pipeline-orthanc, template: create-result-image}
+            arguments:
+              parameters:
+                - {name: study-id, value: "{{steps.followup.outputs.parameters.study-id}}"}
+                - {name: png, value: "{{steps.insightmip.outputs.parameters.png}}"}
+
+    # analysis of one study folder of the finished run (scan date and Orthanc ID from Orthanc)
+    - name: analysis
+      inputs:
+        parameters:
+          - name: accession-number
+          - name: dir
+      steps:
+        - - name: findstudy
+            templateRef: &orthanc {name: pipeline-orthanc, template: request}
+            arguments:
+              parameters:
+                - {name: path, value: /tools/find}
+                - name: body
+                  value: '{"Level": "Study", "Query": {"AccessionNumber": "{{inputs.parameters.accession-number}}"}}'
+                - {name: require, value: "Study {{inputs.parameters.accession-number}} is not in Orthanc."}
+        - - name: studyinfo
+            templateRef: *orthanc
+            arguments:
+              parameters:
+                - {name: path, value: "/studies/{{steps.findstudy.outputs.parameters.first}}"}
+                - {name: method, value: GET}
+        - - name: analysis
+            templateRef: {name: pipeline-analysis, template: analysis}
+            arguments:
+              parameters:
+                - {name: dicom-pet-dir, value: "{{inputs.parameters.dir}}/dicom/pet"}
+                - {name: image-dir, value: "{{inputs.parameters.dir}}/nifti"}
+                - {name: ct-segmentation-dir, value: "{{inputs.parameters.dir}}/ct-segmentation"}
+                - {name: accession-number, value: "{{inputs.parameters.accession-number}}"}
+                - {name: study-date, value: "{{steps.studyinfo.outputs.parameters.date}}"}
+      outputs:
+        parameters:
+          - {name: study-id, valueFrom: {parameter: "{{steps.findstudy.outputs.parameters.first}}"}}
+          - {name: png, valueFrom: {parameter: "{{steps.analysis.outputs.parameters.png}}"}}

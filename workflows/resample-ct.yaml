@@ -1,0 +1,21 @@
+# Resamples the CT NIfTI to the PET grid, in place (image negarshahamiri/resize-volume)
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: pipeline-resample-ct
+spec:
+  templates:
+    - name: resample-ct
+      inputs:
+        parameters:
+          - name: ct
+          - name: pet
+      container:
+        image: negarshahamiri/resize-volume:v2
+        command: [python, /app/resize_volume.py]
+        args: ["-vol1", "{{inputs.parameters.ct}}", "-vol2", "{{inputs.parameters.pet}}"]
+        volumeMounts:
+          - {name: data, mountPath: /data}
+        resources:
+          requests: {cpu: "1", memory: 4Gi}
+          limits: {memory: 8Gi}

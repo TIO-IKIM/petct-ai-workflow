@@ -1,0 +1,259 @@
+# AI PET/CT pipeline: InsightMIP for a follow-up PET/CT study and, optionally, its baseline.
+# Only the order of the steps is defined here; each step is a template from the other
+# WorkflowTemplates in this folder.
+#
+# Register:  argo template create workflows/*.yaml
+# Argo UI:   Workflow Templates -> pipeline -> Submit -> enter the accession number(s)
+# CLI:       argo submit --from workflowtemplate/pipeline -p accession-number=<FOLLOW-UP> \
+#              -p baseline-accession-number=<BASELINE> --watch
+#
+# For the follow-up study and (if given) the baseline study, in parallel (template "timepoint"):
+#   1. Orthanc retrieves the study from the PACS
+#   2. PET and CT series are selected and copied to the shared volume
+#   3. NIfTI conversion, CT resampling, CT organ + PET lesion segmentation, analysis (2D MIP)
+# Then:
+#   4. InsightMIP: baseline MIP (left) and follow-up MIP (right) side by side
+#   5. Lesion segmentation (DICOM SEG) and InsightMIP are stored in the follow-up study in Orthanc
+#      and sent to the PACS
+#   6. Optional: InsightMIP is stored as a FHIR DiagnosticReport
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: pipeline
+  annotations:
+    workflows.argoproj.io/description: >-
+      Reads a follow-up PET/CT study (and optionally its baseline) from the PACS, segments
+      organs and lesions, and stores the lesion segmentation and the InsightMIP (baseline and
+      follow-up side by side) in the follow-up study in the PACS.
+spec:
+  entrypoint: main
+  # Artifact repository (config/artifact-repository.yaml): stores InsightMIP as an output artifact.
+  # Argo also mounts its secret in every step; without a working one, steps hang at PodInitializing.
+  artifactRepositoryRef: {configMap: petct-artifacts, key: s3}
+  arguments:
+    parameters:
+      - name: accession-number
+        value: ""
+        description: Accession number of the follow-up (current) PET/CT study
+      - name: baseline-accession-number
+        value: ""
+        description: Optional accession number of the baseline PET/CT study; empty for a single-scan MIP
+      - name: pet-series
+        value: "*iter*tof*"
+        description: PET SeriesDescription to use (wildcards * and ?, not case-sensitive)
+      - name: ct-series
+        value: "*wb*"
+        description: CT SeriesDescription to use; if several match, the first in alphabetical order (softest kernel) is used
+      - name: retrieve-from-pacs
+        value: "true"
+        enum: ["true", "false"]
+        description: Retrieve the studies from the PACS (false if the PACS already sends studies to Orthanc)
+      - name: send-to-pacs
+        value: "true"
+        enum: ["true", "false"]
+        description: Send the segmentation and InsightMIP to the PACS
+      - name: send-pet-ct
+        value: "false"
+        enum: ["true", "false"]
+        description: Also send the follow-up PET and CT series (only needed if the target is another PACS)
+      - name: send-protocol
+        value: dimse
+        enum: [dimse, dicomweb]
+        description: dimse sends to Orthanc DicomModalities, dicomweb to Orthanc DicomWeb.Servers
+      - name: pacs
+        value: pacs
+        description: Name of the PACS in the Orthanc configuration (for retrieving)
+      - name: send-target
+        value: pacs
+        description: Name of the PACS or DICOMweb server in the Orthanc configuration (for sending)
+      - name: orthanc-url
+        value: http://orthanc:8042
+      - name: fhir-url
+        value: ""
+        description: Optional FHIR server for the DiagnosticReport, e.g. http://hapi-fhir:8080/fhir
+      - name: pvc
+        value: petct-data
+        description: Shared PersistentVolumeClaim for the processing steps
+  # mounted as "data" at /data by all templates in this folder
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: "{{workflow.parameters.pvc}}"
+
+  templates:
+    - name: main
+      steps:
+        - - name: followup
+            template: timepoint
+            arguments:
+              parameters:
+                - {name: accession-number, value: "{{workflow.parameters.accession-number}}"}
+                - {name: dir, value: "/data/runs/{{workflow.name}}/followup"}
+          - name: baseline
+            template: timepoint
+            when: "'{{workflow.parameters.baseline-accession-number}}' != ''"
+            arguments:
+              parameters:
+                - {name: accession-number, value: "{{workflow.parameters.baseline-accession-number}}"}
+                - {name: dir, value: "/data/runs/{{workflow.name}}/baseline"}
+        # baseline (left) + follow-up (right); only the follow-up MIP if there is no baseline
+        - - name: insightmip
+            templateRef: {name: pipeline-analysis, template: insightmip}
+            arguments:
+              parameters:
+                - {name: baseline-png, value: "/data/runs/{{workflow.name}}/baseline/nifti/result.png"}
+                - {name: followup-png, value: "{{steps.followup.outputs.parameters.png}}"}
+                - {name: output-png, value: "/data/runs/{{workflow.name}}/insightmip.png"}
+        - - name: uploadseg
+            templateRef: &orthanc {name: pipeline-orthanc, template: request}
+            arguments:
+              parameters:
+                - {name: path, value: /instances}
+                - {name: file, value: "{{steps.followup.outputs.parameters.seg}}"}
+          - name: createresult
+            templateRef: {name: pipeline-orthanc, template: create-result-image}
+            arguments:
+              parameters:
+                - {name: study-id, value: "{{steps.followup.outputs.parameters.study-id}}"}
+                - {name: png, value: "{{steps.insightmip.outputs.parameters.png}}"}
+        - - name: send-results
+            templateRef: &send {name: pipeline-orthanc, template: send}
+            when: "{{workflow.parameters.send-to-pacs}} == true"
+            arguments:
+              parameters:
+                - name: resources
+                  value: '"{{steps.uploadseg.outputs.parameters.series}}", "{{steps.createresult.outputs.parameters.series}}"'
+                - {name: target, value: "{{workflow.parameters.send-target}}"}
+                - {name: protocol, value: "{{workflow.parameters.send-protocol}}"}
+          - name: send-pet-ct
+            templateRef: *send
+            when: "{{workflow.parameters.send-to-pacs}} == true && {{workflow.parameters.send-pet-ct}} == true"
+            arguments:
+              parameters:
+                - name: resources
+                  value: '"{{steps.followup.outputs.parameters.pet-series-id}}", "{{steps.followup.outputs.parameters.ct-series-id}}"'
+                - {name: target, value: "{{workflow.parameters.send-target}}"}
+                - {name: protocol, value: "{{workflow.parameters.send-protocol}}"}
+          - name: fhir-report
+            templateRef: {name: pipeline-fhir, template: diagnostic-report}
+            when: "'{{workflow.parameters.fhir-url}}' != ''"
+            arguments:
+              parameters:
+                - {name: fhir-url, value: "{{workflow.parameters.fhir-url}}"}
+                - {name: accession-number, value: "{{workflow.parameters.accession-number}}"}
+                - {name: png, value: "{{steps.insightmip.outputs.parameters.png}}"}
+
+    # One PET/CT study: retrieve, select series, convert, segment, analyse. Files go to <dir>.
+    - name: timepoint
+      inputs:
+        parameters:
+          - name: accession-number
+          - name: dir
+      steps:
+        - - name: retrieve-from-pacs
+            templateRef: {name: pipeline-orthanc, template: retrieve-from-pacs}
+            when: "{{workflow.parameters.retrieve-from-pacs}} == true"
+            arguments:
+              parameters:
+                - {name: pacs, value: "{{workflow.parameters.pacs}}"}
+                - {name: accession-number, value: "{{inputs.parameters.accession-number}}"}
+        - - name: findstudy
+            templateRef: *orthanc
+            arguments:
+              parameters:
+                - name: path
+                  value: /tools/find
+                - name: body
+                  value: '{"Level": "Study", "Query": {"AccessionNumber": "{{inputs.parameters.accession-number}}"}}'
+                - name: require
+                  value: >-
+                    Study {{inputs.parameters.accession-number}} is not in Orthanc. Check the accession
+                    number, or submit with retrieve-from-pacs=true.
+        - - name: findpet
+            templateRef: *orthanc
+            arguments:
+              parameters:
+                - name: path
+                  value: /tools/find
+                - name: body
+                  value: '{"Level": "Series", "CaseSensitive": false, "Query": {"AccessionNumber": "{{inputs.parameters.accession-number}}", "Modality": "PT", "SeriesDescription": "{{workflow.parameters.pet-series}}"}, "OrderBy": [{"Type": "DicomTag", "Key": "SeriesDescription", "Direction": "ASC"}]}'
+                - name: require
+                  value: >-
+                    Study {{inputs.parameters.accession-number}}: no PET series matches '{{workflow.parameters.pet-series}}'.
+                    Open the study in the Orthanc Explorer, then resubmit with pet-series set to the right SeriesDescription.
+          - name: findct
+            templateRef: *orthanc
+            arguments:
+              parameters:
+                - name: path
+                  value: /tools/find
+                - name: body
+                  value: '{"Level": "Series", "CaseSensitive": false, "Query": {"AccessionNumber": "{{inputs.parameters.accession-number}}", "Modality": "CT", "SeriesDescription": "{{workflow.parameters.ct-series}}"}, "OrderBy": [{"Type": "DicomTag", "Key": "SeriesDescription", "Direction": "ASC"}]}'
+                - name: require
+                  value: >-
+                    Study {{inputs.parameters.accession-number}}: no CT series matches '{{workflow.parameters.ct-series}}'.
+                    Open the study in the Orthanc Explorer, then resubmit with ct-series set to the right SeriesDescription.
+          - name: studyinfo
+            templateRef: *orthanc
+            arguments:
+              parameters:
+                - {name: path, value: "/studies/{{steps.findstudy.outputs.parameters.first}}"}
+                - {name: method, value: GET}
+        - - name: download-pet
+            templateRef: &download {name: pipeline-orthanc, template: download-series}
+            arguments:
+              parameters:
+                - {name: series-id, value: "{{steps.findpet.outputs.parameters.first}}"}
+                - {name: dir, value: "{{inputs.parameters.dir}}/dicom/pet"}
+          - name: download-ct
+            templateRef: *download
+            arguments:
+              parameters:
+                - {name: series-id, value: "{{steps.findct.outputs.parameters.first}}"}
+                - {name: dir, value: "{{inputs.parameters.dir}}/dicom/ct"}
+        - - name: convert-ct
+            templateRef: &dicom-to-nifti {name: pipeline-dicom-to-nifti, template: dicom-to-nifti}
+            arguments:
+              parameters:
+                - {name: dicom-dir, value: "{{inputs.parameters.dir}}/dicom/ct"}
+                - {name: nifti-file, value: "{{inputs.parameters.dir}}/nifti/petct_0000.nii.gz"}
+          - name: convert-pet
+            templateRef: *dicom-to-nifti
+            arguments:
+              parameters:
+                - {name: dicom-dir, value: "{{inputs.parameters.dir}}/dicom/pet"}
+                - {name: nifti-file, value: "{{inputs.parameters.dir}}/nifti/petct_0001.nii.gz"}
+        - - name: resample-ct
+            templateRef: {name: pipeline-resample-ct, template: resample-ct}
+            arguments:
+              parameters:
+                - {name: ct, value: "{{inputs.parameters.dir}}/nifti/petct_0000.nii.gz"}
+                - {name: pet, value: "{{inputs.parameters.dir}}/nifti/petct_0001.nii.gz"}
+        - - name: ct-segmentation
+            templateRef: {name: pipeline-ct-segmentation, template: ct-segmentation}
+            arguments:
+              parameters:
+                - {name: ct, value: "{{inputs.parameters.dir}}/nifti/petct_0000.nii.gz"}
+                - {name: output-dir, value: "{{inputs.parameters.dir}}/ct-segmentation"}
+          - name: pet-segmentation
+            templateRef: {name: pipeline-pet-segmentation, template: pet-segmentation}
+            arguments:
+              parameters:
+                - {name: image-dir, value: "{{inputs.parameters.dir}}/nifti"}
+                - {name: output-dir, value: "{{inputs.parameters.dir}}/nifti"}
+        - - name: analysis
+            templateRef: {name: pipeline-analysis, template: analysis}
+            arguments:
+              parameters:
+                - {name: dicom-pet-dir, value: "{{inputs.parameters.dir}}/dicom/pet"}
+                - {name: image-dir, value: "{{inputs.parameters.dir}}/nifti"}
+                - {name: ct-segmentation-dir, value: "{{inputs.parameters.dir}}/ct-segmentation"}
+                - {name: accession-number, value: "{{inputs.parameters.accession-number}}"}
+                - {name: study-date, value: "{{steps.studyinfo.outputs.parameters.date}}"}
+      outputs:
+        parameters:
+          - {name: study-id, valueFrom: {parameter: "{{steps.findstudy.outputs.parameters.first}}"}}
+          - {name: pet-series-id, valueFrom: {parameter: "{{steps.findpet.outputs.parameters.first}}"}}
+          - {name: ct-series-id, valueFrom: {parameter: "{{steps.findct.outputs.parameters.first}}"}}
+          - {name: seg, valueFrom: {parameter: "{{steps.analysis.outputs.parameters.seg}}"}}
+          - {name: png, valueFrom: {parameter: "{{steps.analysis.outputs.parameters.png}}"}}

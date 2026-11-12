@@ -1,0 +1,14 @@
+# Shared working volume for all pipeline steps.
+# ReadWriteMany is needed because GPU and CPU steps can run on different nodes.
+# If your cluster only offers ReadWriteOnce, all steps must run on the same node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: petct-data
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 200Gi
+  # storageClassName: nfs-client
