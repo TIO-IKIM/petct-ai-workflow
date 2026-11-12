@@ -24,6 +24,7 @@ spec:
           - >-
             cd /app && python main.py
             --dicom_pet_path "{{inputs.parameters.dicom-pet-dir}}"
+            --image_path "{{inputs.parameters.image-dir}}"
             --output_path "{{inputs.parameters.image-dir}}"
             --ct_segmentation_dir "{{inputs.parameters.ct-segmentation-dir}}"
             --accession_number "{{inputs.parameters.accession-number}}"
