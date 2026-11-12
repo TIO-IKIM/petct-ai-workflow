@@ -28,7 +28,6 @@ spec:
             --output_path "{{inputs.parameters.image-dir}}"
             --ct_segmentation_dir "{{inputs.parameters.ct-segmentation-dir}}"
             --accession_number "{{inputs.parameters.accession-number}}"
-            --date "{{inputs.parameters.study-date}}"
             && cd "{{inputs.parameters.image-dir}}"
             && python -c "import numpy, pydicom, PIL.Image; d = pydicom.dcmread('result.dcm');
             shape = (d.Rows, d.Columns, 3) if int(d.SamplesPerPixel) == 3 else (d.Rows, d.Columns);
