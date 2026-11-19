@@ -25,11 +25,9 @@ def anatomy_tag(ct_label, pet_label):
     - returns value with lung:200, liver:201, bone:202
     """
     pet_label_anatomy = pet_label
-    # Relabel based on the categories
     for value, key in class_map["lung"].items():
         pet_label_anatomy[(ct_label == value) * (pet_label>0)] = 200
 
-    # liver value:5
     pet_label_anatomy[(ct_label == 5) * (pet_label>0)] = 201
 
     for value, key in class_map["bone"].items():
@@ -39,14 +37,14 @@ def anatomy_tag(ct_label, pet_label):
     return pet_label_anatomy
 
 def overlay_label_on_image(image, label, alpha=0.5):
-    RGBforLabel = {1: (0, 0, 1), 2: (0, 1, 1)}  # Define colors for labels in float64 (0.0 to 1.0)
+    RGBforLabel = {1: (0, 0, 1), 2: (0, 1, 1)}
     contours, _ = cv2.findContours(label.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     for c in contours:
-        mask = np.zeros_like(image, dtype=np.float64)  # Create a blank mask
-        cv2.drawContours(mask, [c], -1, 1, -1)  # Fill the contour with value 1
-        colour = RGBforLabel.get(1)  # Retrieve the color for the label
-        for i in range(3):  # Apply the color channel-wise
+        mask = np.zeros_like(image, dtype=np.float64)
+        cv2.drawContours(mask, [c], -1, 1, -1)
+        colour = RGBforLabel.get(1)
+        for i in range(3):
             image[:, :, i] = np.where(mask[:, :, 0] > 0, 
                                       (1 - alpha) * image[:, :, i] + alpha * colour[i], 
                                       image[:, :, i])
@@ -58,7 +56,6 @@ def label_mip(label, axis):
     return label1
 
 
-# Function to prepare and return mip and masks
 def prepare_view(pet_volume, pet_label_volume, thresh, axis):
     pet_mip = np.max(pet_volume, axis=axis)
     pet_mip = np.clip(pet_mip, 0, thresh)
@@ -79,19 +76,14 @@ def find_ct_border(array):
     # Create a mask for the values equal to -1024 in case ct volume is padded
     mask = (array == -1024) 
     if np.any(mask):
-        # Label the connected components (clusters)
         labeled_array, num_features = label(mask)
 
-        # Get the size of each cluster
         cluster_sizes = [(i, np.sum(labeled_array == i)) for i in range(1, num_features + 1)]
 
-        # Find the largest cluster
         largest_cluster_label = max(cluster_sizes, key=lambda x: x[1])[0]
         
-        # Extract the coordinates of the largest cluster
         largest_cluster_coords = np.argwhere(labeled_array != largest_cluster_label)
         
-        # Find the bounding box of the largest cluster
         min_coords = largest_cluster_coords.min(axis=0)
         max_coords = largest_cluster_coords.max(axis=0)
 
@@ -121,6 +113,8 @@ def draw_contours_with_max_intensity(pet_anatomy_label_mip, label_names, tag, ax
     - annotations: [(suv_max, (x, y)), ...] for the three hottest lesions, see top3_suv_clusters
     """
     color = 'yellow'
+    label_box = dict(boxstyle="square,pad=0.15", facecolor="dimgray", edgecolor="none", alpha=0.85)
+    height, width = axes.get_images()[0].get_array().shape
     for label in np.unique(pet_anatomy_label_mip)[1:]:
         mask = np.uint8(pet_anatomy_label_mip == label)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -128,20 +122,25 @@ def draw_contours_with_max_intensity(pet_anatomy_label_mip, label_names, tag, ax
             if cv2.moments(contour)["m00"] == 0:
                 continue
             x, y, w, h = cv2.boundingRect(contour)
-            polygon = mpatches.Polygon(contour[:, 0, :], closed=True, edgecolor=color, facecolor="none", linewidth=1)
+            polygon = mpatches.Polygon(contour[:, 0, :], closed=True, edgecolor=color, facecolor="none", linewidth=1.2)
             axes.add_patch(polygon)
             if label in label_names and label != 1:
-                axes.text(x, y, f'{label_names[label]}', color=color, fontsize=14, ha='left', va='bottom')
+                # organ tag (Lu, Li, B)
+                axes.text(x + w, y, label_names[label], color=color, fontsize=10, fontweight='bold',
+                          ha='left', va='bottom', bbox=label_box, zorder=5)
 
-    xoffset = 0.3 * axes.get_images()[0].get_array().shape[1]
-    yoffset = 10
-    for suv_max, (cX, cY) in annotations:
-        start = (cX, cY)
-        end = (cX - xoffset, cY + yoffset) if tag == "sagittal" else (cX + xoffset, cY + yoffset)
-        axes.annotate(f"(SUV:{suv_max:.1f})", xy=start, xytext=end,
-                      arrowprops=dict(facecolor="black", edgecolor="black", arrowstyle="->", lw=1))
-        xoffset += 10
-        yoffset -= 10
+    # SUVmax labels on the left, with a line to each lesion
+    min_gap = 0.05 * height
+    previous_y = -np.inf
+    for suv_max, (cX, cY) in sorted(annotations, key=lambda a: a[1][1]):
+        label_y = max(cY, previous_y + min_gap)
+        previous_y = label_y
+        axes.plot(cX, cY, marker='o', markersize=4, markerfacecolor='none', markeredgecolor=color,
+                  markeredgewidth=1, zorder=6)
+        axes.annotate(rf"SUV$_{{max}}$={suv_max:.1f}", xy=(cX, cY), xytext=(0.02 * width, label_y),
+                      color=color, fontsize=10, fontweight='bold', ha='left', va='center', zorder=6,
+                      bbox=label_box,
+                      arrowprops=dict(arrowstyle="-", color=color, lw=1, relpos=(1, 0.5), shrinkB=3))
 
 
 def top3_suv_clusters(pet_label_vol, suv_vol):
@@ -163,14 +162,12 @@ def save_figure_as_dicomsec(fig, output_path, dicom_dir):
         output_path (str): Path to save the DICOM file.
         accession_number (str): Accession number for the DICOM metadata.
     """
-    # Convert figure to a NumPy array
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
     buf.seek(0)
     img = Image.open(buf).convert("RGB")  # colour: yellow contours
     array = np.array(img)
 
-    # Load a reference DICOM file to extract metadata
     dicom_file = next(
         (
             os.path.join(dicom_dir, f)
@@ -187,7 +184,6 @@ def save_figure_as_dicomsec(fig, output_path, dicom_dir):
 
     ds = ref_ds.copy()
 
-    # # Image Metadata
     ds.Modality = "SC"
     ds.SeriesNumber = 301 # arbitrary
     ds.Rows, ds.Columns = array.shape[:2]
@@ -207,7 +203,6 @@ def save_figure_as_dicomsec(fig, output_path, dicom_dir):
     ds.PixelSpacing = [slice_thickness,pixel_spacing[0]]  # [X spacing, Y spacing]
     print(pixel_spacing, slice_thickness)
 
-    # Save the SC DICOM file
     pydicom.dcmwrite(output_path, ds)
     print(f"Secondary Capture DICOM saved to {output_path}")
 
@@ -226,7 +221,10 @@ def save_mip_with_overlay(
     ct_volume = sitk.GetArrayFromImage(sitk.ReadImage(ct_volume_path))
     pet_label_volume = sitk.GetArrayFromImage(sitk.ReadImage(pet_label_path))
     ct_label_volume = sitk.GetArrayFromImage(sitk.ReadImage(ct_label_path))
-    suv_map = sitk.GetArrayFromImage(sitk.ReadImage(suv_path))
+    suv_image = sitk.ReadImage(suv_path)
+    suv_map = sitk.GetArrayFromImage(suv_image)
+    # slices are thicker than the pixels, so correct the aspect ratio
+    spacing_x, spacing_y, spacing_z = suv_image.GetSpacing()
 
     masked_values = suv_map[(ct_volume == -1024) & (pet_label_volume == 0)]
 
@@ -266,17 +264,14 @@ def save_mip_with_overlay(
     pet_label_anatomy = anatomy_tag(ct_label_volume, pet_label_volume)
     
 
-    # Create binary masks for aorta and liver regions
     aorta_mask = (ct_label_volume == 52) & (pet_label_volume == 0)
     liver_mask = (ct_label_volume == 5) & (pet_label_volume == 0)
 
-    # Apply 3D erosion to the masks
     # as in the paper: liver eroded by 2 voxels, aorta (blood pool) by 1 voxel in every direction
     # (odd, centred structuring elements; even sizes erode unevenly)
     aorta_eroded = binary_erosion(aorta_mask, structure=np.ones((3, 3, 3)))
     liver_eroded = binary_erosion(liver_mask, structure=np.ones((5, 5, 5)))
 
-    # Calculate the maximum SUV values within the eroded regions
     aorta_max = np.max(suv_map[aorta_eroded == 1])
     liver_max = np.max(suv_map[liver_eroded == 1])
 
@@ -299,11 +294,9 @@ def save_mip_with_overlay(
     coronal_pet_mip = prepare_view(suv_map, pet_label_volume1, thresh, axis=1)
     sagittal_pet_mip = prepare_view(suv_map, pet_label_volume1, thresh, axis=2)
 
-    # Create figure
     fig, axes = plt.subplots(1, 2, facecolor='white', edgecolor='black', figsize=(10, 10))
 
-    # Plot coronal view
-    axes[0].imshow(coronal_pet_mip, 'gray', interpolation='bilinear')
+    axes[0].imshow(coronal_pet_mip, 'gray', interpolation='bilinear', aspect=spacing_z / spacing_x)
     axes[0].axis('off')
     # coronal labels point right, into the sagittal panel: draw the coronal panel on top
     axes[0].set_zorder(2)
@@ -314,10 +307,8 @@ def save_mip_with_overlay(
 
 
 
-    # Plot sagittal view
-    axes[1].imshow(sagittal_pet_mip, 'gray', interpolation='bilinear')
+    axes[1].imshow(sagittal_pet_mip, 'gray', interpolation='bilinear', aspect=spacing_z / spacing_y)
     axes[1].axis('off')
-    # scan date: in the InsightMIP header above each time point (insightmip step), as in the paper
 
     pet_anatomy_label_mip_sagittal = label_mip(pet_label_anatomy, 2)
     draw_contours_with_max_intensity(pet_anatomy_label_mip_sagittal, label_names, 'sagittal', axes[1], annot_sag)
@@ -327,9 +318,9 @@ def save_mip_with_overlay(
                 fontsize=10, color='black', verticalalignment='top',
                 bbox=dict(facecolor='white', alpha=0.7, edgecolor='black'))
 
-    # Save the combined figure
     plt.tight_layout(pad=0.0)
     plt.margins(0,0)
+    fig.savefig(os.path.join(output_path, "result.png"), format="png", dpi=300, bbox_inches="tight")
     save_figure_as_dicomsec(
         fig, os.path.join(output_path, "result.dcm"), dicom_pet_path
     )
