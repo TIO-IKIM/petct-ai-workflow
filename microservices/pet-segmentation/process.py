@@ -24,10 +24,7 @@ class LesionSegmentation:
         Outputs:
         output_path/tumor_seg.nii.gz
         """
-        # set some paths and parameters
-        # according to the specified grand-challenge interfaces
         self.input_path = input_path # contains folder of the ct and pet images
-        # according to the specified grand-challenge interfaces
         self.output_path = output_path # path to the folder of labels
         self.pred_path = (
             "/opt/algorithm/prediction"
@@ -37,11 +34,11 @@ class LesionSegmentation:
         self.classifier_path = "/opt/algorithm/tracer_classifier.pt"
         pass
 
-    def convert_mha_to_nii(self, mha_input_path, nii_out_path):  # nnUNet specific
+    def convert_mha_to_nii(self, mha_input_path, nii_out_path):
         img = SimpleITK.ReadImage(mha_input_path)
         SimpleITK.WriteImage(img, nii_out_path, True)
 
-    def convert_nii_to_mha(self, nii_input_path, mha_out_path):  # nnUNet specific
+    def convert_nii_to_mha(self, nii_input_path, mha_out_path):
         img = SimpleITK.ReadImage(nii_input_path)
         SimpleITK.WriteImage(img, mha_out_path, True)
 
@@ -84,7 +81,6 @@ class LesionSegmentation:
         tracer = classify_pet(self.pet_path, self.classifier_path)
         dataset_nr = 1 if tracer == 'fdg' else 2
 
-        # Run prediction
         print("nnUNet segmentation starting!")
         if dataset_nr == 1:
             cproc = subprocess.run(
@@ -120,7 +116,6 @@ class LesionSegmentation:
         """
         Read inputs from /input, process with your algorithm and write to /output
         """
-        # process function will be called once for each test sample
         
         self.check_gpu()
         print("Start processing")
@@ -134,18 +129,15 @@ if __name__ == "__main__":
     st = time.time()
     parser = argparse.ArgumentParser(description='Lesion Segmentation using PET-CT images')
     
-    # Add input and output path arguments
     parser.add_argument('-i', '--input_path', type=str, required=True, 
                         help='Path to the directory containing input PET-CT images')
     parser.add_argument('-o', '--output_path', type=str, required=True, 
                         help='Path to the directory for saving output segmentation results')
     
-    # Parse the arguments
     args = parser.parse_args()
 
     print("START")
     
-    # Run the process method
     LesionSegmentation(input_path=args.input_path, output_path=args.output_path).process()
     ent = time.time()
     print('time: ', ent-st)
