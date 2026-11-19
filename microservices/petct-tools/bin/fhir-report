@@ -1,0 +1,14 @@
+#!/bin/sh
+# Usage: fhir-report <fhir base url> <accession number> <png>
+set -eu
+FHIR_URL=$1; ACCESSION=$2; PNG=$3
+[ -f "$PNG" ] || { echo "ERROR: $PNG not found" >&2; exit 1; }
+{
+  printf '{"resourceType": "DiagnosticReport", "status": "preliminary",'
+  printf ' "code": {"text": "AI PET/CT reading support"},'
+  printf ' "identifier": [{"type": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0203", "code": "ACSN"}]}, "value": "%s"}],' "$ACCESSION"
+  printf ' "conclusion": "Generated automatically. Verify before clinical use.",'
+  printf ' "presentedForm": [{"contentType": "image/png", "title": "InsightMIP", "data": "'
+  base64 "$PNG" | tr -d '\n'
+  printf '"}]}'
+} | curl -sS --fail-with-body -H "Content-Type: application/fhir+json" --data-binary @- "$FHIR_URL/DiagnosticReport"
