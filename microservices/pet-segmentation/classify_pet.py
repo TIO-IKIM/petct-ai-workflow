@@ -11,8 +11,7 @@ class NumpyToTensorTransform2:
         self.transform = transform
 
     def __call__(self, sample):
-        # Convert numpy array to torch tensor
-        tensor_sample = torch.from_numpy(sample).unsqueeze(0).float()  # Add channel dimension
+        tensor_sample = torch.from_numpy(sample).unsqueeze(0).float()
         tensor_sample = torch.nn.functional.interpolate(tensor_sample.unsqueeze(0), size=self.resize, mode='bilinear', align_corners=False).squeeze(0)
         tensor_sample = normalize_zscore(tensor_sample)
         return tensor_sample    
@@ -47,17 +46,14 @@ class MipClassifier(nn.Module):
     def __init__(self):
         super(MipClassifier, self).__init__()
         
-        # Coronal model (ResNet18)
         self.model_cor = resnet18(pretrained=False)
         self.model_cor.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         self.model_cor.fc = nn.Identity()
         
-        # Sagittal model (ResNet18)
         self.model_sag = resnet18(pretrained=False)
         self.model_sag.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         self.model_sag.fc = nn.Identity()
 
-        # Linear layers for fusion
         self.linear = nn.Sequential(
             nn.Linear(1024, 512),
             nn.ReLU(),
