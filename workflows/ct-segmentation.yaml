@@ -1,4 +1,3 @@
-# CT organ segmentation with TotalSegmentator (official image wasserth/totalsegmentator), GPU
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -13,17 +12,30 @@ spec:
       activeDeadlineSeconds: 7200
       volumes:
         - name: dshm
-          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
       container:
         image: wasserth/totalsegmentator:2.2.1
-        command: [TotalSegmentator]
-        args: ["-i", "{{inputs.parameters.ct}}", "-o", "{{inputs.parameters.output-dir}}"]
+        command:
+          - TotalSegmentator
+        args:
+          - "-i"
+          - "{{inputs.parameters.ct}}"
+          - "-o"
+          - "{{inputs.parameters.output-dir}}"
         env:
-          # model weights are downloaded once and kept on the shared volume
-          - {name: TOTALSEG_HOME_DIR, value: /data/.totalsegmentator}
+          - name: TOTALSEG_HOME_DIR
+            value: /data/.totalsegmentator
         volumeMounts:
-          - {name: data, mountPath: /data}
-          - {name: dshm, mountPath: /dev/shm}
+          - name: data
+            mountPath: /data
+          - name: dshm
+            mountPath: /dev/shm
         resources:
-          requests: {cpu: "4", memory: 50Gi}
-          limits: {memory: 50Gi, nvidia.com/gpu: 1}
+          requests:
+            cpu: "4"
+            memory: 50Gi
+          limits:
+            memory: 50Gi
+            nvidia.com/gpu: 1
