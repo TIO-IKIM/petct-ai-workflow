@@ -1,7 +1,3 @@
-# SUV, reference uptake (liver, blood pool) and 2D MIP result (image negarshahamiri/petct-analysis).
-# main.py reads petct_0000/0001.nii.gz and tumor_seg.nii.gz from <image-dir> and writes
-# tumor_seg.dcm (DICOM SEG) and result.dcm there. result.dcm reuses the UIDs of a PET slice,
-# so only its pixels are kept (result.png); orthanc create-result-image builds a new DICOM.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -18,109 +14,86 @@ spec:
           - name: study-date
             value: ""
       container:
-        image: negarshahamiri/petct-analysis:v4
-        command: [sh, -c]
+        image: &analysis negarshahamiri/petct-analysis:1.0
+        command:
+          - python
+          - /app/main.py
         args:
-          - >-
-            cd /app && python main.py
-            --dicom_pet_path "{{inputs.parameters.dicom-pet-dir}}"
-            --image_path "{{inputs.parameters.image-dir}}"
-            --output_path "{{inputs.parameters.image-dir}}"
-            --ct_segmentation_dir "{{inputs.parameters.ct-segmentation-dir}}"
-            --accession_number "{{inputs.parameters.accession-number}}"
-            && cd "{{inputs.parameters.image-dir}}"
-            && python -c "import numpy, pydicom, PIL.Image; d = pydicom.dcmread('result.dcm');
-            shape = (d.Rows, d.Columns, 3) if int(d.SamplesPerPixel) == 3 else (d.Rows, d.Columns);
-            PIL.Image.fromarray(numpy.frombuffer(d.PixelData, numpy.uint8).reshape(shape)).save('result.png')"
-            && echo "{{inputs.parameters.study-date}}" > scan_date.txt
+          - --dicom_pet_path
+          - "{{inputs.parameters.dicom-pet-dir}}"
+          - --date
+          - "{{inputs.parameters.study-date}}"
+          - --output_path
+          - "{{inputs.parameters.image-dir}}"
+          - --ct_segmentation_dir
+          - "{{inputs.parameters.ct-segmentation-dir}}"
+          - --accession_number
+          - "{{inputs.parameters.accession-number}}"
+        workingDir: /app
         volumeMounts:
-          - {name: data, mountPath: /data}
+          - name: data
+            mountPath: /data
         resources:
-          requests: {cpu: "2", memory: 16Gi}
-          limits: {memory: 32Gi}
+          requests:
+            cpu: "2"
+            memory: 16Gi
+          limits:
+            memory: 32Gi
       outputs:
         parameters:
           - name: seg
             value: "{{inputs.parameters.image-dir}}/tumor_seg.dcm"
           - name: png
             value: "{{inputs.parameters.image-dir}}/result.png"
-
-    # InsightMIP: baseline MIP (left) and follow-up MIP (right) side by side, both at the same size,
-    # each with a bold header (time point, scan date; follow-up with the interval), as in the
-    # paper (compare_timepoints.py). Without a baseline MIP (single study): the follow-up MIP alone.
-    # Scan dates come from scan_date.txt next to each MIP (written by the analysis step).
     - name: insightmip
       inputs:
         parameters:
-          - name: baseline-png
-            description: may not exist (no baseline study)
-          - name: followup-png
+          - name: prior-png
+            value: ""
+          - name: subsequent-png
           - name: output-png
-      script:
-        image: negarshahamiri/petct-analysis:v4
-        command: [python]
-        env:
-          - {name: BASELINE, value: "{{inputs.parameters.baseline-png}}"}
-          - {name: FOLLOWUP, value: "{{inputs.parameters.followup-png}}"}
-          - {name: OUTPUT, value: "{{inputs.parameters.output-png}}"}
-        source: |
-          import os
-          from datetime import datetime
-
-          import matplotlib
-          matplotlib.use("Agg")
-          import matplotlib.pyplot as plt
-          import numpy as np
-          from PIL import Image
-
-          def scan_date(png):
-              try:
-                  text = open(os.path.join(os.path.dirname(png), "scan_date.txt")).read().strip()
-                  return datetime.strptime(text[:8], "%Y%m%d")
-              except (OSError, ValueError):
-                  return None
-
-          if not os.path.isfile(os.environ["FOLLOWUP"]):
-              raise SystemExit("ERROR: follow-up MIP " + os.environ["FOLLOWUP"] + " not found")
-          panels = []  # (image, title)
-          followup_date = scan_date(os.environ["FOLLOWUP"])
-          if os.path.isfile(os.environ["BASELINE"]):
-              baseline_date = scan_date(os.environ["BASELINE"])
-              panels.append((Image.open(os.environ["BASELINE"]).convert("RGB"),
-                             "Baseline" + (f": {baseline_date:%d.%m.%Y}" if baseline_date else "")))
-              interval = ""
-              if baseline_date and followup_date:
-                  interval = f" (+{(followup_date - baseline_date).days / 30.44:.1f} months)"
-              panels.append((Image.open(os.environ["FOLLOWUP"]).convert("RGB"),
-                             "Follow-up" + (f": {followup_date:%d.%m.%Y}" if followup_date else "") + interval))
-          else:
-              panels.append((Image.open(os.environ["FOLLOWUP"]).convert("RGB"),
-                             f"Scan date: {followup_date:%d.%m.%Y}" if followup_date else ""))
-
-          # same size for both time points, so they display at equal scale
-          width = max(image.width for image, _ in panels)
-          height = max(image.height for image, _ in panels)
-          fig, axes = plt.subplots(1, len(panels), facecolor="white", figsize=(8 * len(panels), 10),
-                                   layout="constrained", gridspec_kw=dict(wspace=0.04), squeeze=False)
-          for ax, (image, title) in zip(axes[0], panels):
-              ax.imshow(np.asarray(image.resize((width, height), Image.BILINEAR)))
-              ax.axis("off")
-              ax.set_title(title, fontsize=16, fontweight="bold", pad=10)
-          fig.savefig(os.environ["OUTPUT"], bbox_inches="tight", dpi=300)
-          # copy for the output artifact (downloadable in the Argo UI)
-          fig.savefig("/tmp/insightmip.png", bbox_inches="tight", dpi=300)
-          plt.close(fig)
-          print(f"InsightMIP from {len(panels)} time point(s): {[t for _, t in panels]} -> {os.environ['OUTPUT']}")
+      container:
+        image: *analysis
+        command:
+          - python
+          - /app/insightmip.py
+        args:
+          - --prior
+          - "{{inputs.parameters.prior-png}}"
+          - --subsequent
+          - "{{inputs.parameters.subsequent-png}}"
+          - --output
+          - "{{inputs.parameters.output-png}}"
         volumeMounts:
-          - {name: data, mountPath: /data}
+          - name: data
+            mountPath: /data
         resources:
-          requests: {cpu: 250m, memory: 512Mi}
+          requests:
+            cpu: 250m
+            memory: 512Mi
       outputs:
         parameters:
           - name: png
             value: "{{inputs.parameters.output-png}}"
-        # InsightMIP in the workflow's artifact repository: Argo UI -> run -> insightmip -> Artifacts
-        artifacts:
-          - name: insightmip
-            path: /tmp/insightmip.png
-            archive: {none: {}}
+    - name: save-results
+      inputs:
+        parameters:
+          - name: image-dir
+          - name: insightmip-png
+          - name: results-dir
+      container:
+        image: negarshahamiri/petct-tools:1.1
+        command:
+          - save-results
+        args:
+          - "{{inputs.parameters.results-dir}}"
+          - "{{inputs.parameters.image-dir}}/tumor_seg.dcm"
+          - "{{inputs.parameters.image-dir}}/tumor_seg.nii.gz"
+          - "{{inputs.parameters.insightmip-png}}"
+        volumeMounts:
+          - name: data
+            mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
