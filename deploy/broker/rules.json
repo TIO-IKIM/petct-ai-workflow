@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "name": "lymphoma",
+      "icd10": ["C81*"],
+      "topic": "petct-workflow/lymphoma",
+      "workflowTemplate": "pipeline",
+      "parameters": {
+        "pet-series": "auto",
+        "ct-series": "auto",
+        "retrieve-from-pacs": "false",
+        "send-to-pacs": "false",
+        "fhir-url": "http://hapi-fhir:8080/fhir"
+      }
+    }
+  ]
+}
