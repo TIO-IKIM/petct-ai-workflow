@@ -1,0 +1,9 @@
+#!/bin/sh
+# Usage: orthanc-download <series id> <folder>
+set -eu
+SERIES=$1; DIR=$2
+mkdir -p "$DIR"
+rm -f "$DIR"/*
+curl -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" -o /tmp/series.zip "$ORTHANC_URL/series/$SERIES/archive"
+unzip -q -j /tmp/series.zip -d "$DIR"
+echo "$(ls "$DIR" | wc -l) files in $DIR"
