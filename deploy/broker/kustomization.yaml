@@ -1,0 +1,9 @@
+resources:
+  - broker.yaml
+configMapGenerator:
+  - name: petct-broker-code
+    files:
+      - broker.py
+  - name: petct-broker-rules
+    files:
+      - rules.json
