@@ -1,12 +1,12 @@
 # Integrating AI into the clinical PET/CT workflow for Deauville score assessment in lymphoma
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-
-![InsightMIP example](docs/assets/example.png)
-
-*InsightMIP: prior scan (left) and current scan (right), coronal and sagittal views, with lesions outlined, their location (lung, liver, bone) and the SUVmax of the mediastinal blood pool, the liver and the three most active lesions.*
-
-**Docs:** [Parameters and outputs](docs/parameters-and-outputs.md) · [Architecture](docs/architecture.md) · [Extending and PACS](docs/extending.md) · [Troubleshooting](docs/troubleshooting.md)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white)
+![Argo Workflows](https://img.shields.io/badge/Argo_Workflows-EF7B4D?logo=argo&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
+![Orthanc](https://img.shields.io/badge/DICOM-Orthanc-0a3463)
+![FHIR](https://img.shields.io/badge/HL7-FHIR-E8541C)
 
 ## Why
 
@@ -62,6 +62,8 @@ scripts/get-results.sh AUTOPET-1956-FU ./results $NS
 ```
 
 The example workflow puts the diagnosis (ICD-10 C81.9) into FHIR, downloads both studies from TCIA and names them `<prefix>-BL` (prior) and `<prefix>-FU` (current).
+
+**Docs:** [Parameters and outputs](docs/parameters-and-outputs.md) · [Architecture](docs/architecture.md) · [Extending and PACS](docs/extending.md) · [Troubleshooting](docs/troubleshooting.md)
 
 ## Installation
 
