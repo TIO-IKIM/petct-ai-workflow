@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Created on Wed Mar 24 22:48:15 2021
 
@@ -78,21 +77,15 @@ def sitk_read_to_size(dicom_directory, sitk_img_with_target_size):
 
 
 def save_nifti(array, spacing, origin, direction, save_dir, filename):
-    # transform z, y, x ??? =>  x, y, z
-    # array = np.moveaxis(array, [2,1,0], [0,1,2])
 
-    # Create a SimpleITK Image from the array
     image = sitk.GetImageFromArray(array)
 
-    # Set the image spacing, origin, and direction
     image.SetSpacing(spacing)
     image.SetOrigin(origin)
     image.SetDirection(direction)
 
-    # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
 
-    # Save the image to disk
     sitk.WriteImage(image, os.path.join(save_dir, filename))
     print(f'...{filename} written to {save_dir}')
 
@@ -205,7 +198,6 @@ def _bqml_suv_factor(image_file_list, f):
         traceback.print_exc()
         weight_grams = 80000
         print ('weight estimated as 80 kg')
-    # try calculating decay
     try:
         if str(getattr(f, 'DecayCorrection', '')).upper() == 'ADMIN':
             # Image already decay-corrected to injection time: no dose decay correction.
@@ -213,26 +205,20 @@ def _bqml_suv_factor(image_file_list, f):
         else:
             # Scan reference time (series start), not an arbitrary slice's AcquisitionTime
             scantime = get_scan_time(image_file_list, f)
-            # Start Time for the Radiopharmaceutical Injection
             injection_time = _parse_dicom_time(f.RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartTime)
-            # Half Life for Radionuclide # seconds
             half_life = float(f.RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife)
 
-            # calculating decay
             decay = np.exp(-np.log(2)*((scantime-injection_time).seconds)/half_life)
             print(f'uptake time {(scantime-injection_time).seconds/60:.1f} min, decay factor {decay:.4f}')
 
-    # except estimation
     except:
         traceback.print_exc()
         decay = np.exp(-np.log(2)*(1.25*3600)/6588) # 60 min waiting time, 15 min preparation (in seconds)
         print ('could not fetch data for decay calculation, thus estimating with 75 min scan-delay')
 
     try:
-        # Total radionuclide dose injected
         injected_dose = float(f.RadiopharmaceuticalInformationSequence[0].RadionuclideTotalDose)
 
-        # Calculate dose during PET scan
         injected_dose_decay = injected_dose*decay # in Bq
     except:
         traceback.print_exc()
@@ -277,7 +263,6 @@ def suv_read(dicom_directory):
 
     f=pydicom.dcmread(image_file_list[0])
 
-    # Calculate SUV # g/ml
     SUVbwScaleFactor = get_suv_factor(image_file_list, f)
     print(f'SUVbw scale factor {SUVbwScaleFactor:.6g}')
     suv_array = pet_array * SUVbwScaleFactor
@@ -294,20 +279,17 @@ def combine_labels(segmentation_dir):
     """
     combined_image = None
     for label_id, label_name in class_map["total"].items():
-        label_id = int(label_id)  # Convert label_id from string to integer
+        label_id = int(label_id)
         label_file = os.path.join(segmentation_dir, f"{label_name}.nii.gz")
         if not os.path.exists(label_file):
             continue
 
-        # Load the label file
         label_image = sitk.ReadImage(label_file)
         label_array = sitk.GetArrayFromImage(label_image)
 
-        # Initialize combined_image
         if combined_image is None:
             combined_image = np.zeros_like(label_array, dtype=np.uint8)
 
-        # Assign label ID to the corresponding regions
         combined_image[label_array > 0] = label_id
 
     return combined_image
@@ -327,7 +309,6 @@ def write_dicom_seg_from_nifti(
     - metainfo_json_path: path to DCMQI metainfo.json template
     - output_dicom_seg_path: output path for DICOM-SEG (.dcm)
     """
-    # Read SeriesInstanceUID from first DICOM file in directory
     first_dicom_file = next(
         (
             os.path.join(dicom_dir, f)
@@ -342,23 +323,18 @@ def write_dicom_seg_from_nifti(
     ds = pydicom.dcmread(first_dicom_file)
     series_instance_uid = ds.SeriesInstanceUID
 
-    # Load NIfTI segmentation
     segmentation = sitk.ReadImage(nifti_seg_path)
-    segmentation = sitk.Flip(segmentation, [False, False, True])  # Flip Z
+    segmentation = sitk.Flip(segmentation, [False, False, True])
 
-    # Load original DICOM series
     reader = sitk.ImageSeriesReader()
     dicom_filenames = reader.GetGDCMSeriesFileNames(dicom_dir, series_instance_uid)
     reader.SetFileNames(dicom_filenames)
     reference_image = reader.Execute()
 
-    # Align spatial info
     segmentation.CopyInformation(reference_image)
 
-    # Load DICOM metadata template
     template = from_dcmqi_metainfo(metainfo_json_path)
 
-    # Create writer
     writer = MultiClassWriter(
         template=template,
         inplane_cropping=False,
@@ -370,10 +346,8 @@ def write_dicom_seg_from_nifti(
         pydicom.dcmread(fp, stop_before_pixels=True) for fp in dicom_filenames
     ]
 
-    # Write DICOM-SEG
     dcm_seg = writer.write(segmentation, source_images)
 
-    # Save
     dcm_seg.save_as(output_dicom_seg_path)
 
     print(f"DICOM-SEG saved to: {output_dicom_seg_path}")
