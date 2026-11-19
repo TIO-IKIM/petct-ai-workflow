@@ -1,0 +1,6 @@
+resources:
+  - listener.yaml
+configMapGenerator:
+  - name: petct-listener-code
+    files:
+      - listener.py
