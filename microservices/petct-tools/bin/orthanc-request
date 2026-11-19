@@ -1,0 +1,17 @@
+#!/bin/sh
+# Usage: orthanc-request <path> [method=POST] [json body] [dicom file] [error if empty list]
+set -eu
+REQUEST_PATH=$1; METHOD=${2:-POST}; BODY=${3:-}; FILE=${4:-}; REQUIRE=${5:-}
+set -- -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" -X "$METHOD"
+if [ -n "$FILE" ]; then set -- "$@" -H "Content-Type: application/dicom" --data-binary "@$FILE"
+elif [ -n "$BODY" ]; then set -- "$@" -H "Content-Type: application/json" --data-binary "$BODY"; fi
+if ! answer=$(curl "$@" "$ORTHANC_URL$REQUEST_PATH"); then
+  echo "$answer" >&2; echo "ERROR: Orthanc request failed: $METHOD $REQUEST_PATH" >&2; exit 1
+fi
+echo "$answer"
+field() { echo "$answer" | sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" | head -n 1; }
+echo "$answer" | tr -d ' \n\r\t' | sed -n 's/^\["\([^"]*\)".*/\1/p' > /tmp/first
+field ID > /tmp/id
+field ParentSeries > /tmp/series
+field StudyDate > /tmp/date
+if [ -n "$REQUIRE" ] && [ ! -s /tmp/first ]; then echo "ERROR: $REQUIRE" >&2; exit 1; fi
