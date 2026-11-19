@@ -8,15 +8,12 @@
 ![Orthanc](https://img.shields.io/badge/DICOM-Orthanc-0a3463)
 ![FHIR](https://img.shields.io/badge/HL7-FHIR-E8541C)
 
-## Why
+![Pipeline overview](docs/assets/figure.svg)
+
 
 Therapy response in Hodgkin lymphoma is assessed with the Deauville score (DS, 1–5) on [18F]FDG PET/CT: the most intense uptake at the sites of initial disease, seen on the baseline scan before therapy, is scored against two reference organs (mediastinal blood pool and liver). Finding every lesion and measuring SUVmax values by hand is slow, and AI models that could do it rarely reach clinical routine: images have to be exported, processed elsewhere and the results brought back.
 
-## What it does
-
 This framework integrates the AI into the workflow. It starts by itself when a study arrives and puts an interpretable result into the same study, next to the images the physician is already reading. The framework does the measuring; the physician decides the Deauville score.
-
-![Pipeline overview](docs/assets/figure.svg)
 
 1. Finds the PET and CT series of the current and the prior study.
 2. Segments the reference organs ([TotalSegmentator](https://github.com/wasserth/TotalSegmentator)) and the lesions ([autoPET III](https://github.com/hakal104/autoPETIII) nnU-Net).
