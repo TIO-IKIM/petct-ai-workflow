@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: petct-lymphoma
+spec:
+  eventBusName: default
+  template:
+    serviceAccountName: operate-workflow-sa
+  dependencies:
+    - name: study
+      eventSourceName: emqx
+      eventName: new-study
+  triggers:
+    - template:
+        name: lymphoma-pipeline
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: pipeline-
+                labels:
+                  petct-accession: ""
+                  petct-started-by: sensor-lymphoma
+              spec:
+                workflowTemplateRef:
+                  name: pipeline
+                arguments:
+                  parameters:
+                    - name: accession-number
+                      value: ""
+                    - name: prior-accession-number
+                      value: ""
+                    - name: pet-series
+                      value: auto
+                    - name: ct-series
+                      value: auto
+                    - name: retrieve-from-pacs
+                      value: "false"
+                    - name: send-to-pacs
+                      value: "false"
+                    - name: fhir-url
+                      value: "http://hapi-fhir:8080/fhir"
+          parameters:
+            - src:
+                dependencyName: study
+                dataKey: body.accession-number
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: study
+                dataKey: body.prior-accession-number
+                value: ""
+              dest: spec.arguments.parameters.1.value
+            - src:
+                dependencyName: study
+                dataKey: body.label
+              dest: metadata.labels.petct-accession
