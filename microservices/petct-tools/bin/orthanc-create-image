@@ -1,0 +1,32 @@
+#!/bin/sh
+# Usage: orthanc-create-image <study id> <png> [series description=InsightMIP] [comment]
+set -eu
+STUDY=$1; PNG=$2; DESCRIPTION=${3:-InsightMIP}
+COMMENT=${4:-"InsightMIP: prior scan (left) and subsequent scan (right) MIP, generated automatically. Verify before clinical use."}
+[ -f "$PNG" ] || { echo "ERROR: $PNG not found" >&2; exit 1; }
+orthanc() { curl -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" "$@"; }
+
+# same UIDs on every run, so a rerun replaces the image
+STUDY_UID=$(orthanc "$ORTHANC_URL/studies/$STUDY" | tr -d '\n' | sed -n 's/.*"StudyInstanceUID" *: *"\([^"]*\)".*/\1/p')
+[ -n "$STUDY_UID" ] || { echo "ERROR: StudyInstanceUID of study $STUDY not found" >&2; exit 1; }
+uid() {
+  h=$(printf '%s' "$1" | md5sum | cut -c1-30)
+  printf '2.25.1%019d%019d' "$((0x$(echo "$h" | cut -c1-15)))" "$((0x$(echo "$h" | cut -c16-30)))"
+}
+SERIES_UID=$(uid "$STUDY_UID/$DESCRIPTION/series")
+SOP_UID=$(uid "$STUDY_UID/$DESCRIPTION/instance")
+
+# Orthanc doesn't overwrite by default, so delete the old one first.
+# "Force": true is needed to set our own SOPInstanceUID/SeriesInstanceUID under a parent study.
+for id in $(orthanc -X POST -d "$SERIES_UID" "$ORTHANC_URL/tools/lookup" | tr -d '\n' | sed 's/}/}\n/g' | grep '"Type" *: *"Series"' | sed -n 's/.*"ID" *: *"\([^"]*\)".*/\1/p'); do
+  echo "Replacing existing $DESCRIPTION series $id"
+  orthanc -X DELETE "$ORTHANC_URL/series/$id" > /dev/null
+done
+
+answer=$({
+  printf '{"Parent": "%s", "Force": true, "Tags": {"SeriesInstanceUID": "%s", "SOPInstanceUID": "%s", "SeriesDescription": "%s", "Modality": "OT", "SeriesNumber": "9901", "ImageComments": "%s"}, "Content": "data:image/png;base64,' "$STUDY" "$SERIES_UID" "$SOP_UID" "$DESCRIPTION" "$COMMENT"
+  base64 "$PNG" | tr -d '\n'
+  printf '"}'
+} | curl -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" -H "Content-Type: application/json" --data-binary @- "$ORTHANC_URL/tools/create-dicom")
+echo "$answer"
+echo "$answer" | sed -n 's/.*"ParentSeries" *: *"\([^"]*\)".*/\1/p' | head -n 1 > /tmp/series
