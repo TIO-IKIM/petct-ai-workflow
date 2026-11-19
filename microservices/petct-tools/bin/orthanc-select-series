@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+# Usage: orthanc-select-series <accession number> [pet pattern=auto] [ct pattern=auto]
+# Picks the PET and CT series of a study from DICOM tags; writes their Orthanc IDs to /tmp/pet and /tmp/ct.
+import base64, fnmatch, json, os, sys, urllib.request
+
+URL = os.environ["ORTHANC_URL"].rstrip("/")
+AUTH = "Basic " + base64.b64encode(
+    f"{os.environ['ORTHANC_USERNAME']}:{os.environ['ORTHANC_PASSWORD']}".encode()).decode()
+ACC = sys.argv[1]
+PET_PATTERN = sys.argv[2] if len(sys.argv) > 2 else "auto"
+CT_PATTERN = sys.argv[3] if len(sys.argv) > 3 else "auto"
+LUNG_KERNELS = ("lung", "bone", "sharp", "b60", "b70", "b80", "i70", "br60", "br64", "yc", "yd", "l ")
+
+def call(path, body=None):
+    req = urllib.request.Request(URL + path, data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Authorization": AUTH, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.load(r)
+
+def fail(msg):
+    print("ERROR:", msg, flush=True)
+    sys.exit(1)
+
+def series(modality, pattern):
+    found = call("/tools/find", {"Level": "Series", "Expand": True,
+                                 "Query": {"AccessionNumber": ACC, "Modality": modality}})
+    out = []
+    for s in found:
+        desc = s["MainDicomTags"].get("SeriesDescription", "")
+        if pattern not in ("", "auto", "*") and not fnmatch.fnmatch(desc.lower(), pattern.lower()):
+            continue
+        tags = call(f"/instances/{s['Instances'][0]}/simplified-tags")
+        if modality == "PT":  # simplified-tags drops private tags; Philips SUV factors are in group 7053
+            raw = call(f"/instances/{s['Instances'][0]}/tags?short")
+            tags.update({k: v for k, v in raw.items() if k.startswith("7053,")})
+        out.append({"id": s["ID"], "desc": desc, "n": len(s["Instances"]),
+                    "number": int(s["MainDicomTags"].get("SeriesNumber") or 0) if
+                              str(s["MainDicomTags"].get("SeriesNumber", "")).isdigit() else 0,
+                    "type": str(tags.get("ImageType", "")).upper(), "tags": tags})
+    return out
+
+def show(c, why):
+    print(f"  {c['n']:4d} images  #{c['number']:<4} {c['desc']!r:40} {why}", flush=True)
+
+# image storage SOP classes: PET, enhanced PET, legacy-converted enhanced PET / CT, enhanced CT, legacy CT
+IMAGE_SOP = {"PT": ("1.2.840.10008.5.1.4.1.1.128", "1.2.840.10008.5.1.4.1.1.130", "1.2.840.10008.5.1.4.1.1.128.1"),
+             "CT": ("1.2.840.10008.5.1.4.1.1.2", "1.2.840.10008.5.1.4.1.1.2.1", "1.2.840.10008.5.1.4.1.1.2.2")}
+
+def image_problem(c, modality):
+    # hard rejections: screenshots, MIPs, reformats; ORIGINAL vs DERIVED is only a preference
+    # (anonymised / converted data is often all DERIVED)
+    if c["tags"].get("SOPClassUID") not in IMAGE_SOP[modality]:
+        return f"not an image series (SOP class {c['tags'].get('SOPClassUID')})"
+    for word in ("MIP", "SCREEN", "PROJECTION", "LOCALIZER", "REFORMATTED", "MPR"):
+        if word in c["type"]:
+            return f"image type {c['type']}"
+    return None
+
+def original(c):
+    return c["type"].startswith("ORIGINAL")
+
+# PET
+pets = series("PT", PET_PATTERN)
+print(f"PET candidates in {ACC} (pattern {PET_PATTERN!r}):", flush=True)
+ok = []
+for c in pets:
+    t = c["tags"]
+    reasons = []
+    if image_problem(c, "PT"): reasons.append(image_problem(c, "PT"))
+    if "ATTN" not in str(t.get("CorrectedImage", "")).upper(): reasons.append("not attenuation-corrected")
+    # same unit handling as get_suv_factor in petct-analysis/utils.py
+    units = str(t.get("Units", "BQML")).strip().upper() or "BQML"
+    if units == "BQML":
+        if not t.get("RadiopharmaceuticalInformationSequence") or not t.get("PatientWeight"):
+            reasons.append("missing dose or weight (no SUV)")
+    elif units == "CNTS":
+        if not (t.get("7053,1000") or t.get("7053,1009")):
+            reasons.append("units CNTS without Philips scale factors (7053,1000)/(7053,1009)")
+    elif units != "GML":
+        reasons.append(f"units {units!r}: no SUV")
+    if c["n"] < 20: reasons.append("too few images")
+    show(c, "-> rejected: " + ", ".join(reasons) if reasons else f"-> candidate ({c['type'] or 'no image type'})")
+    if not reasons: ok.append(c)
+if not ok:
+    fail(f"study {ACC}: no usable PET series (image series, attenuation-corrected, convertible to SUV). "
+         "Resubmit with pet-series set to the SeriesDescription to use.")
+ok.sort(key=lambda c: (not original(c), -c["n"], c["number"]))
+pet = ok[0]
+if len(ok) > 1 and ok[1]["n"] == pet["n"] and original(ok[1]) == original(pet):
+    print(f"WARNING: several PET series with {pet['n']} images; taking the lowest series number. "
+          "Set pet-series to choose another.", flush=True)
+print(f"PET selected: {pet['desc']!r} ({pet['n']} images)", flush=True)
+frame = pet["tags"].get("FrameOfReferenceUID")
+
+# CT
+cts = series("CT", CT_PATTERN)
+print(f"CT candidates in {ACC} (pattern {CT_PATTERN!r}):", flush=True)
+ok = []
+for c in cts:
+    reasons = []
+    if image_problem(c, "CT"): reasons.append(image_problem(c, "CT"))
+    if "CORONAL" in c["type"] or "SAGITTAL" in c["type"]: reasons.append(f"not axial ({c['type']})")
+    if c["n"] < 20: reasons.append("too few images")
+    same = frame and c["tags"].get("FrameOfReferenceUID") == frame
+    kernel = str(c["tags"].get("ConvolutionKernel", "")).lower()
+    lung = any(k in kernel + " " for k in LUNG_KERNELS)
+    show(c, ("-> rejected: " + ", ".join(reasons)) if reasons else
+            f"-> candidate (same frame as PET: {bool(same)}, kernel {kernel!r}{', sharp' if lung else ''})")
+    if not reasons:
+        c["same"], c["lung"] = bool(same), lung
+        ok.append(c)
+if not ok:
+    fail(f"study {ACC}: no axial CT image series. Resubmit with ct-series set to the SeriesDescription to use.")
+if not any(c["same"] for c in ok):
+    print("WARNING: no CT shares the PET frame of reference; choosing among all CT series.", flush=True)
+# same acquisition first, then soft-tissue kernel among series of similar size, then most images
+most = max(c["n"] for c in ok)
+ok.sort(key=lambda c: (not c["same"], c["n"] < 0.8 * most, c["lung"], not original(c), -c["n"], c["number"]))
+ct = ok[0]
+print(f"CT selected: {ct['desc']!r} ({ct['n']} images)", flush=True)
+
+open("/tmp/pet", "w").write(pet["id"])
+open("/tmp/ct", "w").write(ct["id"])
