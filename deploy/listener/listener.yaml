@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: petct-listener
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: petct-listener
+  template:
+    metadata:
+      labels:
+        app: petct-listener
+    spec:
+      serviceAccountName: operate-workflow-sa
+      containers:
+        - name: listener
+          image: negarshahamiri/petct-listener:1.0
+          env:
+            - name: ORTHANC_URL
+              value: "http://orthanc:8042"
+            - name: FHIR_URL
+              value: "http://hapi-fhir:8080/fhir"
+            - name: MQTT_HOST
+              value: emqx-listeners
+            - name: MQTT_PORT
+              value: "1883"
+            - name: ORTHANC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: orthanc-login
+                  key: username
+            - name: ORTHANC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orthanc-login
+                  key: password
+          volumeMounts:
+            - name: code
+              mountPath: /app
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: code
+          configMap:
+            name: petct-listener-code
