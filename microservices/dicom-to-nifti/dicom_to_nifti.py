@@ -1,21 +1,4 @@
-"""
-DICOM series folder -> NIfTI, for CT, PET and other cross-sectional series from any vendor.
-
-Based on petct-automated-workflow/src/microservices/dicom-to-nifti. Differences:
-  - Reads every file in the folder (any or no extension), skips non-DICOM and non-image files.
-  - Several series in the folder: uses --series-uid, else the series with the most slices.
-  - Geometry from the slice positions (ImagePositionPatient), not from the header normal.
-    Fixes series whose orientation normal points against the slice order (e.g. Philips CT),
-    which were otherwise mirrored out of place.
-  - Unequal slice spacing (e.g. CT with varying thickness) is resampled to the median spacing.
-  - Duplicate positions (dynamic/gated or mixed acquisitions) and gantry tilt raise an error.
-  - Per-slice RescaleSlope/Intercept applied in float, no int16 clipping (e.g. Philips PET).
-  - PET as SUVbw (default) or raw values; see suv.py for units and decay correction.
-  - CT stored as int16 HU, PET and others as float32.
-
-Usage: python dicom_to_nifti.py -i <dicom dir> -o <file.nii.gz> [--pet suv|raw]
-       [--series-uid UID] [--allow-estimates] [-s "(x, y, z)"]
-"""
+"""DICOM series folder -> NIfTI (CT in HU, PET as SUVbw), any vendor."""
 import argparse
 import ast
 import os
