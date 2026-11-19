@@ -1,134 +1,142 @@
-# AI PET/CT Reading Framework
+# Integrating AI into the clinical PET/CT workflow for Deauville score assessment in lymphoma
 
-Automated [18F]FDG PET/CT processing for Hodgkin lymphoma therapy response assessment, supporting physician Deauville score (DS) reading. The result is **InsightMIP**: coronal and sagittal maximum intensity projections of the baseline and follow-up scans side by side, with lesion overlays, anatomical tags (lung, liver, bone), and SUVmax of the mediastinal blood pool, the liver and the three hottest lesions.
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-The pipeline runs as [Argo Workflows](https://argoproj.github.io/workflows/) on Kubernetes. [Orthanc](https://www.orthanc-server.com/) is the DICOM gateway to your PACS and [HAPI FHIR](https://hapifhir.io/) optionally stores the result as a FHIR resource. For a follow-up study and, optionally, its baseline study (accession numbers), it:
+![InsightMIP example](docs/assets/example.png)
 
-1. Retrieves both studies from the PACS into Orthanc.
-2. For each study (in parallel): selects the PET and whole-body CT series, converts DICOM to NIfTI, resamples the CT to the PET grid, segments organs on CT with [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) (liver and mediastinal blood pool references) and FDG-avid lesions on PET/CT with an nnU-Net model, and computes SUV, reference uptake and the 2D MIP.
-3. Concatenates the baseline MIP (left) and the follow-up MIP (right) into InsightMIP.
-4. Stores the lesion segmentation (DICOM SEG) and InsightMIP in the follow-up study in Orthanc, sends them to the PACS and, optionally, posts a FHIR `DiagnosticReport`.
+*InsightMIP: prior scan (left) and current scan (right), coronal and sagittal views, with lesions outlined, their location (lung, liver, bone) and the SUVmax of the mediastinal blood pool, the liver and the three most active lesions.*
 
-Results are for research and reading support. Verify them before clinical use.
+**Docs:** [Parameters and outputs](docs/parameters-and-outputs.md) · [Architecture](docs/architecture.md) · [Extending and PACS](docs/extending.md) · [Troubleshooting](docs/troubleshooting.md)
 
-## Repository layout
+## Why
 
-```
-config/pvc.yaml            shared working volume for the pipeline
-config/artifact-repository.yaml  S3 artifact repository (InsightMIP download in the Argo UI)
-deploy/orthanc.yaml        Orthanc (official image orthancteam/orthanc), includes the OHIF viewer
-deploy/hapi-fhir.yaml      HAPI FHIR (official image hapiproject/hapi), optional
-workflows/
-  pipeline.yaml            the pipeline: order of the steps only (per study, then InsightMIP)
-  orthanc.yaml             Orthanc REST calls: find, retrieve, download, create DICOM, send
-  dicom-to-nifti.yaml      DICOM -> NIfTI
-  resample-ct.yaml         CT -> PET grid
-  ct-segmentation.yaml     TotalSegmentator (GPU)
-  pet-segmentation.yaml    nnU-Net lesion segmentation (GPU)
-  analysis.yaml            SUV, reference uptake, DICOM SEG, MIP per study, InsightMIP
-  fhir.yaml                FHIR DiagnosticReport
-  rerun-insightmip.yaml    re-creates InsightMIP from a finished run (analysis only, no segmentation)
-scripts/get-insightmip.sh  downloads InsightMIP of a run from the shared volume
-microservices/             source and Dockerfile of each own container image
-  dicom-to-nifti/          DICOM -> NIfTI (CT in HU, PET in SUV, any vendor)
-  resize-volume/           CT -> PET grid
-  pet-segmentation/        nnU-Net lesion segmentation (model weights not included, see its Dockerfile)
-  petct-analysis/          SUV, reference organs, DICOM SEG, MIP (InsightMIP style)
-```
+Therapy response in Hodgkin lymphoma is assessed with the Deauville score (DS, 1–5) on [18F]FDG PET/CT: the most intense uptake at the sites of initial disease, seen on the baseline scan before therapy, is scored against two reference organs (mediastinal blood pool and liver). Finding every lesion and measuring SUVmax values by hand is slow, and AI models that could do it rarely reach clinical routine: images have to be exported, processed elsewhere and the results brought back.
 
-Every file in `workflows/` is its own Argo `WorkflowTemplate`, named `pipeline-<file name>` (the main one is just `pipeline`); `pipeline` calls the others with `templateRef`, and they can be reused in other workflows.
+## What it does
 
-## Requirements
+This framework integrates the AI into the workflow. It starts by itself when a study arrives and puts an interpretable result into the same study, next to the images the physician is already reading. The framework does the measuring; the physician decides the Deauville score.
 
-- Kubernetes with at least one NVIDIA GPU node (about 50 GiB RAM for the segmentation steps)
-- [Argo Workflows](https://argo-workflows.readthedocs.io/) and the `argo` CLI
-- A PACS that accepts C-FIND and C-GET (or C-MOVE) from Orthanc, and C-STORE (or STOW-RS) for the results
+![Pipeline overview](docs/assets/figure.svg)
 
-All container images are public:
+1. Finds the PET and CT series of the current and the prior study.
+2. Segments the reference organs ([TotalSegmentator](https://github.com/wasserth/TotalSegmentator)) and the lesions ([autoPET III](https://github.com/hakal104/autoPETIII) nnU-Net).
+3. Measures SUVmax and builds InsightMIP, stored back in the study in Orthanc together with the lesion segmentation.
 
-| Step | Image | Source |
-|---|---|---|
-| DICOM gateway, viewer | `orthancteam/orthanc:26.9.0` | official |
-| FHIR server (optional) | `hapiproject/hapi:v8.12.0-1` | official |
-| Orthanc / FHIR calls | `curlimages/curl:8.16.0` | official |
-| DICOM -> NIfTI | `negarshahamiri/dicom-to-nifti:v2` | [microservices/dicom-to-nifti](microservices/dicom-to-nifti) |
-| Resampling | `negarshahamiri/resize-volume:v2` | [microservices/resize-volume](microservices/resize-volume) |
-| CT organ segmentation | `wasserth/totalsegmentator:2.2.1` | official |
-| PET lesion segmentation | `negarshahamiri/pet-segmentation:v1` | [microservices/pet-segmentation](microservices/pet-segmentation) |
-| Analysis | `negarshahamiri/petct-analysis:v4` | [microservices/petct-analysis](microservices/petct-analysis) |
+<details>
+<summary>Glossary</summary>
 
-## Setup
+| Term | Meaning |
+|---|---|
+| Deauville score (DS) | 5-point scale for the most intense uptake at a site of initial disease, compared with blood pool and liver; DS 1–3 usually counts as complete metabolic response, DS 4–5 as residual disease |
+| SUVmax | Highest standardized uptake value in a region |
+| MIP | Maximum intensity projection: a 2D image of the brightest voxel along each ray |
+| Orthanc | Open-source DICOM server, used here as image archive and viewer (OHIF) |
+| HAPI FHIR | FHIR server holding the diagnoses (ICD-10), which decide which workflow a study gets |
+| Argo Workflows | Kubernetes workflow engine running each pipeline step as a container |
 
-Run everything in one namespace (`kubectl config set-context --current --namespace <NAMESPACE>`). The Argo service account in that namespace must be allowed to run workflows.
+</details>
 
-**1. Orthanc login.** Create the secret `orthanc-login`. `users` configures Orthanc, `username`/`password` are used by the pipeline:
+## Results
 
-```sh
-kubectl create secret generic orthanc-login \
-  --from-literal=username=pipeline \
-  --from-literal=password='<PASSWORD>' \
-  --from-literal=users='{"pipeline": "<PASSWORD>"}'
+<!-- TODO: number of readers and their experience; the confusion matrices sum to 318 readings -->
+
+Physicians read 32 cases with InsightMIP.
+
+![User study results](docs/assets/user-study.png)
+
+![InsightMIP in the OHIF viewer](docs/assets/ohif-viewer.png)
+
+*The result in the OHIF viewer of Orthanc: InsightMIP and the lesion segmentation are stored in the current study, next to the CT and PET. Example results for three autoPET patients are in [data_autopet/results](data_autopet/results).*
+
+## Quickstart (autoPET example)
+
+Loads a public lymphoma patient and gives you a finished InsightMIP in your own Orthanc, about 10–20 min per patient on one GPU. First do the [Installation](#installation), including the automatic start (step 4). Then:
+
+```bash
+# load one example patient; the pipeline starts by itself about 1 min later
+argo submit -n $NS --from workflowtemplate/pipeline-autopet-example --wait \
+  -p patient-id=PETCT_1956667fce -p accession-prefix=AUTOPET-1956
+
+argo list -n $NS
+scripts/get-results.sh AUTOPET-1956-FU ./results $NS
 ```
 
-Optional key `dicomweb-servers` to send results with DICOMweb, e.g. `{"pacs-web": {"Url": "https://pacs.example.org/dicom-web/", "Username": "...", "Password": "..."}}`.
+The example workflow puts the diagnosis (ICD-10 C81.9) into FHIR, downloads both studies from TCIA and names them `<prefix>-BL` (prior) and `<prefix>-FU` (current).
 
-**2. Orthanc.** In [deploy/orthanc.yaml](deploy/orthanc.yaml) set `ORTHANC__DICOM_MODALITIES` to your PACS (AE title, host, port) and register Orthanc's AE title `PETCT_AI` in the PACS. Then:
+## Installation
 
-```sh
-kubectl apply -f deploy/orthanc.yaml
-kubectl apply -f deploy/hapi-fhir.yaml     # optional
-kubectl apply -f config/pvc.yaml           # needs a ReadWriteMany storage class
+**Requirements:** Kubernetes with at least one NVIDIA GPU node (about 50 GiB RAM for segmentation), a ReadWriteMany storage class, [Argo Workflows](https://argo-workflows.readthedocs.io/) with the `argo` CLI. For the automatic start: an MQTT broker (EMQX) reachable as `emqx-listeners:1883`, the service account `operate-workflow-sa` allowed to create workflows, and [Argo Events](https://argoproj.github.io/argo-events/). All container images are public and pulled automatically.
+
+<!-- TODO: tested Kubernetes / Argo versions, GPU memory, storage per run -->
+
+```bash
+export NS=<NAMESPACE>
+
+# 1. Orthanc login
+kubectl create secret generic orthanc-login -n $NS \
+  --from-literal=username=orthanc \
+  --from-literal=password=orthanc \
+  --from-literal=users='{"orthanc": "orthanc"}'
+
+# 2. Archive, FHIR server, shared volume
+kubectl apply -n $NS -f deploy/orthanc.yaml
+kubectl apply -n $NS -f deploy/hapi-fhir.yaml
+kubectl apply -n $NS -f config/pvc.yaml
+
+# 3. Workflow templates
+kubectl apply -n $NS -f workflows/
+
+# 4. Automatic start (listener, broker, Argo Events)
+kubectl apply -k deploy/listener -n $NS
+kubectl apply -k deploy/broker -n $NS
+kubectl apply -n $NS -f deploy/argo-events/   # set eventBusName there if your EventBus is not called "default"
 ```
 
-Check the PACS connection: `curl -u pipeline:<PASSWORD> -X POST http://<orthanc>:8042/modalities/pacs/echo`.
-
-**3. GPU.** The segmentation steps request `nvidia.com/gpu: 1`. If your GPU nodes have taints or need a node selector, add them in `ct-segmentation.yaml` and `pet-segmentation.yaml`.
-
-**4. Register the templates:**
-
-```sh
-argo template create workflows/*.yaml
-```
-
-`pipeline` stores InsightMIP as an Argo output artifact in the S3 artifact repository [config/artifact-repository.yaml](config/artifact-repository.yaml) (ConfigMap `petct-artifacts`): set its bucket, endpoint (host only, without `https://`) and credentials secret, then `kubectl apply -f config/artifact-repository.yaml`. Argo mounts the repository secret in every step; without a working repository, every step stays at `PodInitializing` (event `FailedMount ... secret ... not found`).
+The segmentation steps request `nvidia.com/gpu: 1`; add tolerations or a node selector in [ct-segmentation.yaml](workflows/ct-segmentation.yaml) and [pet-segmentation.yaml](workflows/pet-segmentation.yaml) if your GPU nodes need them. Argo Events or the broker submits the workflows, never both (see [Architecture](docs/architecture.md)).
 
 ## Running
 
-Argo UI: *Workflow Templates → pipeline → Submit*, enter the accession numbers of the follow-up and the baseline study. Or:
+Every study needs an AccessionNumber. Send a study to Orthanc, and the pipeline starts by itself when the patient has a matching diagnosis in FHIR. For a local DICOM folder, one command also creates the FHIR Patient and diagnosis:
 
-```sh
-argo submit --from workflowtemplate/pipeline \
-  -p accession-number=<FOLLOW-UP ACCESSION> \
-  -p baseline-accession-number=<BASELINE ACCESSION> --watch
+```bash
+python3 scripts/send_test_study.py <DICOM FOLDER> --icd10 C81.9 -n $NS
 ```
 
-Without `baseline-accession-number`, InsightMIP shows the follow-up study only.
+Or start the pipeline by hand:
 
-Useful parameters (all have defaults, see [pipeline.yaml](workflows/pipeline.yaml)):
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| `baseline-accession-number` | empty | baseline study, shown left in InsightMIP |
-| `pet-series` / `ct-series` | `*iter*tof*` / `*wb*` | SeriesDescription patterns for the PET and CT series |
-| `retrieve-from-pacs` | `true` | `false` if the PACS already sends studies to Orthanc |
-| `send-to-pacs` | `true` | send SEG and InsightMIP to `send-target` |
-| `send-protocol` | `dimse` | `dicomweb` to use `dicomweb-servers` |
-| `fhir-url` | empty | e.g. `http://hapi-fhir:8080/fhir` to post a `DiagnosticReport` |
-| `pvc` | `petct-data` | shared volume |
-
-Intermediate files are written to `/data/runs/<workflow name>/followup/` and `.../baseline/` on the shared volume (`dicom/`, `nifti/`, `ct-segmentation/`), InsightMIP to `/data/runs/<workflow name>/insightmip.png`. InsightMIP is also saved as an Argo output artifact in the workflow's artifact repository, so it can be downloaded without access to Orthanc: Argo UI → the run → step `insightmip` → *Artifacts*. The results (series `InsightMIP` and the lesion SEG in the follow-up study) can be viewed in OHIF at `http://<orthanc>:8042/ohif/`.
-
-To download InsightMIP of a run to your computer with kubectl only (no Argo UI or port-forward needed):
-
-```sh
-scripts/get-insightmip.sh <pipeline run name>      # e.g. scripts/get-insightmip.sh pipeline-mfsbm
+```bash
+argo submit -n $NS --from workflowtemplate/pipeline \
+  -p accession-number=<CURRENT ACCESSION> -p prior-accession-number=<PRIOR ACCESSION> --watch
 ```
 
-To re-create only InsightMIP from a finished run (for example after updating the analysis image), without segmenting again:
+<details>
+<summary>Other ways to send studies, local autoPET files, port forwarding</summary>
 
-```sh
-argo submit --from workflowtemplate/pipeline-rerun-insightmip -p run=<pipeline run name> \
-  -p accession-number=<FOLLOW-UP ACCESSION> -p baseline-accession-number=<BASELINE ACCESSION> --watch
-```
+- Orthanc Explorer → *Upload*, or DICOM C-STORE to AE title `PETCT_AI`. Send the patient's earlier study first if you want it as the prior.
+- Announce a study already in Orthanc again: `kubectl exec -n $NS deploy/petct-listener -- python /app/listener.py publish <ACCESSION>`
+- The three example patients as local files (about 3.5 GB, `data_autopet/<PatientID>/<YYYY-MM-DD>/{CT,PT,SEG}/`):
 
-The shared volume and Orthanc contain patient data. Restrict access to the namespace, and delete old runs from the volume when they are no longer needed.
+  ```bash
+  scripts/download-autopet.sh                                # the three example patients
+  scripts/download-autopet.sh data_autopet PETCT_2f9aec0275  # any other autoPET patient
+  ```
+
+- Access from your computer:
+
+  ```bash
+  kubectl port-forward svc/orthanc 8042:8042 -n $NS &     # http://localhost:8042/ui/app/, OHIF at /ohif/
+  kubectl port-forward svc/hapi-fhir 8080:8080 -n $NS &   # http://localhost:8080/fhir
+  ```
+
+</details>
+
+## License and acknowledgements
+
+This repository is licensed under the [Apache License 2.0](LICENSE).
+
+- Lesion segmentation uses the model and code of [hakal104/autoPETIII](https://github.com/hakal104/autoPETIII) (MIT, see [LICENSE-autoPETIII](microservices/pet-segmentation/LICENSE-autoPETIII)): Kalisch H, Hörst F, Herrmann K, Kleesiek J, Seibold C. Autopet III challenge: Incorporating anatomical knowledge into nnUNet for lesion segmentation in PET/CT. arXiv:2409.12155 (2024). https://arxiv.org/abs/2409.12155
+- Lesion segmentation is built on [nnU-Net](https://github.com/MIC-DKFZ/nnUNet) (Apache 2.0): Isensee F, Jaeger PF, Kohl SAA, Petersen J, Maier-Hein KH. nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation. Nature Methods 18, 203–211 (2021). https://doi.org/10.1038/s41592-020-01008-z
+- Organ segmentation uses [TotalSegmentator](https://github.com/wasserth/TotalSegmentator): Wasserthal J, et al. TotalSegmentator: robust segmentation of 104 anatomic structures in CT images. Radiology: Artificial Intelligence 5(5), e230024 (2023). https://doi.org/10.1148/ryai.230024
+- Example images are derived from the FDG-PET-CT-Lesions dataset (CC BY 4.0, see [data_autopet/results/README.md](data_autopet/results/README.md)):
+  - Gatidis S, Kuestner T. A whole-body FDG-PET/CT dataset with manually annotated tumor lesions (FDG-PET-CT-Lesions). The Cancer Imaging Archive, 2022. https://doi.org/10.7937/gkr0-xv29
+  - Gatidis S, et al. A whole-body FDG-PET/CT Dataset with manually annotated Tumor Lesions. Scientific Data 9, 601 (2022). https://doi.org/10.1038/s41597-022-01718-3
