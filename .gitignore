@@ -32,3 +32,6 @@ logs/
 !**/requirements.txt
 # personal scripts
 temp/
+
+# local cluster settings
+local/
