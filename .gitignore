@@ -1,19 +1,34 @@
-# patient data and results: never commit
+# patient data (example results are kept)
 data_sample/
 data_sample_removed/
+data_autopet/*
+!data_autopet/results/
+data_autopet/results/**/run.txt
+data_autopet/results/dice.csv
 *.png
 !microservices/pet-segmentation/nnUNet/documentation/assets/*.png
+!data_autopet/results/**/insightmip.png
+!data_autopet/results/**/result.png
+!docs/assets/*.png
 *.nii
 *.nii.gz
 *.dcm
-# model weights (see microservices/pet-segmentation/Dockerfile)
+# model weights
 microservices/pet-segmentation/nnUNet_results/
 *.pt
 *.pth
 *.model
-# local files
+# local
 __pycache__/
 *.pyc
 *.egg-info/
 .ipynb_checkpoints/
 .DS_Store
+# logs
+*.log
+logs/
+*.txt
+!requirements.txt
+!**/requirements.txt
+# personal scripts
+temp/
