@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: emqx
+spec:
+  eventBusName: default
+  template:
+    container:
+      env:
+        - name: LOG_LEVEL
+          value: debug
+  mqtt:
+    new-study:
+      url: tcp://emqx-listeners:1883
+      topic: petct-workflow/lymphoma
+      clientId: "petct-argo-events"
+      jsonBody: true
+      connectionBackoff:
+        duration: 10s
+        factor: 2
+        jitter: 0.2
+        steps: 5
