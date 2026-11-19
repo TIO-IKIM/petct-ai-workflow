@@ -1,6 +1,3 @@
-# PET lesion segmentation with nnU-Net (image negarshahamiri/pet-segmentation), GPU.
-# Reads <image-dir>/petct_0000.nii.gz (CT) and petct_0001.nii.gz (PET),
-# writes <output-dir>/tumor_seg.nii.gz.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -15,15 +12,29 @@ spec:
       activeDeadlineSeconds: 7200
       volumes:
         - name: dshm
-          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
       container:
-        image: negarshahamiri/pet-segmentation:v1
-        command: [python, /opt/algorithm/process.py]
-        args: ["-i", "{{inputs.parameters.image-dir}}", "-o", "{{inputs.parameters.output-dir}}"]
+        image: negarshahamiri/pet-segmentation:1.0
+        command:
+          - python
+          - /opt/algorithm/process.py
+        args:
+          - "-i"
+          - "{{inputs.parameters.image-dir}}"
+          - "-o"
+          - "{{inputs.parameters.output-dir}}"
         workingDir: /opt/algorithm
         volumeMounts:
-          - {name: data, mountPath: /data}
-          - {name: dshm, mountPath: /dev/shm}
+          - name: data
+            mountPath: /data
+          - name: dshm
+            mountPath: /dev/shm
         resources:
-          requests: {cpu: "4", memory: 50Gi}
-          limits: {memory: 50Gi, nvidia.com/gpu: 1}
+          requests:
+            cpu: "4"
+            memory: 50Gi
+          limits:
+            memory: 50Gi
+            nvidia.com/gpu: 1
