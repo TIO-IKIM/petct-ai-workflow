@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: petct-broker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: petct-broker
+  template:
+    metadata:
+      labels:
+        app: petct-broker
+    spec:
+      serviceAccountName: operate-workflow-sa
+      containers:
+        - name: broker
+          image: negarshahamiri/petct-broker:1.0
+          env:
+            - name: FHIR_URL
+              value: "http://hapi-fhir:8080/fhir"
+            - name: MQTT_HOST
+              value: emqx-listeners
+            - name: MQTT_PORT
+              value: "1883"
+            - name: RULES_FILE
+              value: /config/rules.json
+            - name: TRIGGER
+              value: "false"
+          volumeMounts:
+            - name: code
+              mountPath: /app
+            - name: rules
+              mountPath: /config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: code
+          configMap:
+            name: petct-broker-code
+        - name: rules
+          configMap:
+            name: petct-broker-rules
