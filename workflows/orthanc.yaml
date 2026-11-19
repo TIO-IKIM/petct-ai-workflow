@@ -1,6 +1,3 @@
-# Orthanc operations used by pipeline. Each step is a call to the Orthanc REST API
-# (https://orthanc.uclouvain.be/api/) made with the public curl image; no custom code.
-# Login: secret 'orthanc-login' (keys username, password). URL: workflow parameter orthanc-url.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -11,8 +8,6 @@ spec:
       - name: orthanc-url
         value: http://orthanc:8042
   templates:
-    # One Orthanc REST call. Outputs the first ID of a list answer ("first"), the "ID",
-    # "ParentSeries" and "StudyDate" fields of an object answer.
     - name: request
       inputs:
         parameters:
@@ -23,166 +18,176 @@ spec:
             value: ""
           - name: file
             value: ""
-            description: file on the shared volume to send as the request body
           - name: require
             value: ""
-            description: error message if the answer is an empty list
-      script:
-        image: &curl curlimages/curl:8.16.0
-        command: [sh]
-        env:
-          - &url {name: ORTHANC_URL, value: "{{workflow.parameters.orthanc-url}}"}
-          - &user {name: ORTHANC_USERNAME, valueFrom: {secretKeyRef: {name: orthanc-login, key: username}}}
-          - &password {name: ORTHANC_PASSWORD, valueFrom: {secretKeyRef: {name: orthanc-login, key: password}}}
-          - {name: REQUEST_PATH, value: "{{inputs.parameters.path}}"}
-          - {name: METHOD, value: "{{inputs.parameters.method}}"}
-          - {name: BODY, value: "{{inputs.parameters.body}}"}
-          - {name: FILE, value: "{{inputs.parameters.file}}"}
-          - {name: REQUIRE, value: "{{inputs.parameters.require}}"}
-        source: |
-          set -eu
-          set -- -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" -X "$METHOD"
-          if [ -n "$FILE" ]; then set -- "$@" -H "Content-Type: application/dicom" --data-binary "@$FILE"
-          elif [ -n "$BODY" ]; then set -- "$@" -H "Content-Type: application/json" --data-binary "$BODY"; fi
-          if ! answer=$(curl "$@" "$ORTHANC_URL$REQUEST_PATH"); then
-            echo "$answer" >&2; echo "ERROR: Orthanc request failed: $METHOD $REQUEST_PATH" >&2; exit 1
-          fi
-          echo "$answer"
-          echo "$answer" | tr -d ' \n\r\t' | sed -n 's/^\["\([^"]*\)".*/\1/p' > /tmp/first
-          echo "$answer" | sed -n 's/.*"ID" *: *"\([^"]*\)".*/\1/p' | head -n 1 > /tmp/id
-          echo "$answer" | sed -n 's/.*"ParentSeries" *: *"\([^"]*\)".*/\1/p' | head -n 1 > /tmp/series
-          echo "$answer" | sed -n 's/.*"StudyDate" *: *"\([^"]*\)".*/\1/p' | head -n 1 > /tmp/date
-          if [ -n "$REQUIRE" ] && [ ! -s /tmp/first ]; then echo "ERROR: $REQUIRE" >&2; exit 1; fi
+            description: error if nothing found
+      container:
+        image: &tools negarshahamiri/petct-tools:1.1
+        command:
+          - orthanc-request
+        args:
+          - "{{inputs.parameters.path}}"
+          - "{{inputs.parameters.method}}"
+          - "{{inputs.parameters.body}}"
+          - "{{inputs.parameters.file}}"
+          - "{{inputs.parameters.require}}"
+        env: &orthanc-env
+          - name: ORTHANC_URL
+            value: "{{workflow.parameters.orthanc-url}}"
+          - name: ORTHANC_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: orthanc-login
+                key: username
+          - name: ORTHANC_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: orthanc-login
+                key: password
         volumeMounts: &data-mount
-          - {name: data, mountPath: /data}
-        securityContext: &root {runAsUser: 0}
+          - name: data
+            mountPath: /data
+        resources: &small
+          requests:
+            cpu: 100m
+            memory: 128Mi
       outputs:
         parameters:
-          - {name: first, valueFrom: {path: /tmp/first, default: ""}}
-          - {name: id, valueFrom: {path: /tmp/id, default: ""}}
-          - {name: series, valueFrom: {path: /tmp/series, default: ""}}
-          - {name: date, valueFrom: {path: /tmp/date, default: ""}}
-
-    # C-FIND + C-GET/C-MOVE of a study from a PACS configured in Orthanc DicomModalities
+          - name: first
+            valueFrom:
+              path: /tmp/first
+              default: ""
+          - name: id
+            valueFrom:
+              path: /tmp/id
+              default: ""
+          - name: series
+            valueFrom:
+              path: /tmp/series
+              default: ""
+          - name: date
+            valueFrom:
+              path: /tmp/date
+              default: ""
     - name: retrieve-from-pacs
       inputs:
         parameters:
           - name: pacs
           - name: accession-number
       steps:
-        - - name: query
-            template: request
-            arguments:
-              parameters:
-                - name: path
-                  value: "/modalities/{{inputs.parameters.pacs}}/query"
-                - name: body
-                  value: '{"Level": "Study", "Query": {"AccessionNumber": "{{inputs.parameters.accession-number}}"}}'
-        - - name: answers
-            template: request
-            arguments:
-              parameters:
-                - name: path
-                  value: "/queries/{{steps.query.outputs.parameters.id}}/answers"
-                - name: method
-                  value: GET
-                - name: require
-                  value: "The PACS has no study with accession number {{inputs.parameters.accession-number}}."
-        - - name: retrieve
-            template: request
-            arguments:
-              parameters:
-                - name: path
-                  value: "/queries/{{steps.query.outputs.parameters.id}}/retrieve"
-                - name: body
-                  value: '{"Synchronous": true}'
-
-    # Copies all DICOM files of one series into a folder on the shared volume
+        -   - name: query
+              template: request
+              arguments:
+                parameters:
+                  - name: path
+                    value: "/modalities/{{inputs.parameters.pacs}}/query"
+                  - name: body
+                    value: '{"Level": "Study", "Query": {"AccessionNumber": "{{inputs.parameters.accession-number}}"}}'
+        -   - name: answers
+              template: request
+              arguments:
+                parameters:
+                  - name: path
+                    value: "/queries/{{steps.query.outputs.parameters.id}}/answers"
+                  - name: method
+                    value: GET
+                  - name: require
+                    value: "The PACS has no study with accession number {{inputs.parameters.accession-number}}."
+        -   - name: retrieve
+              template: request
+              arguments:
+                parameters:
+                  - name: path
+                    value: "/queries/{{steps.query.outputs.parameters.id}}/retrieve"
+                  - name: body
+                    value: '{"Synchronous": true}'
+    - name: select-series
+      inputs:
+        parameters:
+          - name: accession-number
+          - name: pet-series
+            value: auto
+          - name: ct-series
+            value: auto
+      container:
+        image: *tools
+        command:
+          - orthanc-select-series
+        args:
+          - "{{inputs.parameters.accession-number}}"
+          - "{{inputs.parameters.pet-series}}"
+          - "{{inputs.parameters.ct-series}}"
+        env: *orthanc-env
+        resources: *small
+      outputs:
+        parameters:
+          - name: pet
+            valueFrom:
+              path: /tmp/pet
+          - name: ct
+            valueFrom:
+              path: /tmp/ct
     - name: download-series
       inputs:
         parameters:
           - name: series-id
           - name: dir
-      script:
-        image: *curl
-        command: [sh]
-        env:
-          - *url
-          - *user
-          - *password
-          - {name: SERIES, value: "{{inputs.parameters.series-id}}"}
-          - {name: DIR, value: "{{inputs.parameters.dir}}"}
-        source: |
-          set -eu
-          mkdir -p "$DIR"
-          rm -f "$DIR"/*
-          curl -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" -o /tmp/series.zip "$ORTHANC_URL/series/$SERIES/archive"
-          unzip -q -j /tmp/series.zip -d "$DIR"
-          echo "$(ls "$DIR" | wc -l) files in $DIR"
+      container:
+        image: *tools
+        command:
+          - orthanc-download
+        args:
+          - "{{inputs.parameters.series-id}}"
+          - "{{inputs.parameters.dir}}"
+        env: *orthanc-env
         volumeMounts: *data-mount
-        securityContext: *root
         resources:
-          requests: {cpu: 250m, memory: 256Mi}
-
-    # Stores a PNG as a new DICOM image inside an existing study (Orthanc /tools/create-dicom)
+          requests:
+            cpu: 250m
+            memory: 256Mi
     - name: create-result-image
       inputs:
         parameters:
           - name: study-id
-            description: Orthanc ID of the study
           - name: png
-      script:
-        image: *curl
-        command: [sh]
-        env:
-          - *url
-          - *user
-          - *password
-          - {name: STUDY, value: "{{inputs.parameters.study-id}}"}
-          - {name: PNG, value: "{{inputs.parameters.png}}"}
-        source: |
-          set -eu
-          [ -f "$PNG" ] || { echo "ERROR: $PNG not found" >&2; exit 1; }
-          answer=$({
-            printf '{"Parent": "%s", "Tags": {"SeriesDescription": "InsightMIP", "Modality": "OT", "SeriesNumber": "9901", "ImageComments": "InsightMIP: baseline (left) and follow-up (right) MIP, generated automatically. Verify before clinical use."}, "Content": "data:image/png;base64,' "$STUDY"
-            base64 "$PNG" | tr -d '\n'
-            printf '"}'
-          } | curl -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" -H "Content-Type: application/json" --data-binary @- "$ORTHANC_URL/tools/create-dicom")
-          echo "$answer"
-          echo "$answer" | sed -n 's/.*"ParentSeries" *: *"\([^"]*\)".*/\1/p' | head -n 1 > /tmp/series
+      container:
+        image: *tools
+        command:
+          - orthanc-create-image
+        args:
+          - "{{inputs.parameters.study-id}}"
+          - "{{inputs.parameters.png}}"
+        env: *orthanc-env
         volumeMounts: *data-mount
+        resources: *small
       outputs:
         parameters:
-          - {name: series, valueFrom: {path: /tmp/series}}
-
-    # Sends Orthanc resources to a DICOM modality (C-STORE) or a DICOMweb server (STOW-RS)
+          - name: series
+            valueFrom:
+              path: /tmp/series
     - name: send
       inputs:
         parameters:
           - name: resources
-            description: 'quoted Orthanc IDs, comma-separated, e.g. "id1", "id2"'
+            description: '"id1", "id2"'
           - name: target
-            description: name in Orthanc DicomModalities (dimse) or DicomWeb.Servers (dicomweb)
           - name: protocol
             value: dimse
-            enum: [dimse, dicomweb]
-      script:
-        image: *curl
-        command: [sh]
-        env:
-          - *url
-          - *user
-          - *password
-          - {name: RESOURCES, value: "{{inputs.parameters.resources}}"}
-          - {name: TARGET, value: "{{inputs.parameters.target}}"}
-          - {name: PROTOCOL, value: "{{inputs.parameters.protocol}}"}
-        source: |
-          set -eu
-          if [ "$PROTOCOL" = "dicomweb" ]; then URL="$ORTHANC_URL/dicom-web/servers/$TARGET/stow"
-          else URL="$ORTHANC_URL/modalities/$TARGET/store"; fi
-          echo "Sending [$RESOURCES] to $TARGET ($PROTOCOL)"
-          curl -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" -H "Content-Type: application/json" \
-            --data-binary "{\"Resources\": [$RESOURCES], \"Synchronous\": true}" "$URL"
+            enum:
+              - dimse
+              - dicomweb
+      container:
+        image: *tools
+        command:
+          - orthanc-send
+        args:
+          - "{{inputs.parameters.resources}}"
+          - "{{inputs.parameters.target}}"
+          - "{{inputs.parameters.protocol}}"
+        env: *orthanc-env
+        resources: *small
       retryStrategy:
         limit: "2"
-        backoff: {duration: "1m", factor: "2"}
+        backoff:
+          duration: "1m"
+          factor: "2"
