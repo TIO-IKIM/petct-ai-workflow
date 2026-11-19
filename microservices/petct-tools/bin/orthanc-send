@@ -1,0 +1,9 @@
+#!/bin/sh
+# Usage: orthanc-send <resources> <target> [protocol=dimse|dicomweb]
+set -eu
+RESOURCES=$1; TARGET=$2; PROTOCOL=${3:-dimse}
+if [ "$PROTOCOL" = "dicomweb" ]; then URL="$ORTHANC_URL/dicom-web/servers/$TARGET/stow"
+else URL="$ORTHANC_URL/modalities/$TARGET/store"; fi
+echo "Sending [$RESOURCES] to $TARGET ($PROTOCOL)"
+curl -sS --fail-with-body -u "$ORTHANC_USERNAME:$ORTHANC_PASSWORD" -H "Content-Type: application/json" \
+  --data-binary "{\"Resources\": [$RESOURCES], \"Synchronous\": true}" "$URL"
